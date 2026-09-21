@@ -1,0 +1,16 @@
+services:
+  monitor:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: vps-monitor
+    restart: unless-stopped
+    ports:
+      - "48080:8080"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - RUST_LOG=info
+      - DATABASE_URL=sqlite:/app/data/monitor.db?mode=rwc
+      - REPORT_SECRET=report-secret-77889900
+      - ADMIN_SECRET=admin-secret-77889900

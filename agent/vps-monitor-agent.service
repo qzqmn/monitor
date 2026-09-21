@@ -1,0 +1,19 @@
+[Unit]
+Description=VPS Monitor Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=MONITOR_URL=http://你的中央端IP:8080
+# AGENT_ID / AGENT_NAME 可省略，預設用系統 hostname；顯示名可之後在管理後台修改
+# Environment=AGENT_ID=oracle-tokyo
+# Environment=AGENT_NAME=Oracle-日本東京-ARM
+Environment=REPORT_SECRET=change-me-report-secret-123456
+Environment=INTERVAL_SECS=20
+ExecStart=/usr/local/bin/vps-monitor-agent
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

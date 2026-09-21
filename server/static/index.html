@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>伺服器監控中心</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f0fdf4; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        .glass-card { background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(10px); }
+        .progress-bar-fill { transition: width 0.5s ease-in-out; }
+    </style>
+</head>
+<body class="min-h-screen pb-12 text-gray-800">
+
+    <header class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 pb-4 flex justify-between items-center">
+        <div class="flex items-center space-x-3">
+            <div class="w-10 h-10 rounded-full bg-emerald-500 flex items-center justify-center text-white font-bold text-xl shadow-md">
+                🛡️
+            </div>
+            <div>
+                <h1 class="text-xl sm:text-2xl font-bold text-gray-900">伺服器監控站</h1>
+                <p class="text-xs text-gray-500">實時狀態監測 · VPS / NAS / Mobile</p>
+            </div>
+        </div>
+        <div>
+            <a href="/admin.html" class="inline-flex items-center space-x-1 text-sm bg-white border border-gray-200 px-3 py-1.5 rounded-lg shadow-sm hover:bg-gray-50 transition">
+                <i class="fa-solid fa-gear text-gray-600"></i>
+                <span class="font-medium text-gray-700">管理後台</span>
+            </a>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-4">
+        <div id="server-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+            <div class="col-span-full text-center py-12 text-gray-400">
+                <i class="fa-solid fa-circle-notch fa-spin text-3xl mb-3 text-emerald-500"></i>
+                <p>正在拉取伺服器實時狀態...</p>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        function getFlag(country) {
+            if (!country) return '🌐';
+            const c = country.toUpperCase();
+            if (c === 'SG') return '🇸🇬';
+            if (c === 'JP') return '🇯🇵';
+            if (c === 'MY') return '🇲🇾';
+            if (c === 'US') return '🇺🇸';
+            if (c === 'HK') return '🇭🇰';
+            if (c === 'ID') return '🇮🇩';
+            return '🌐';
+        }
+
+        function formatSpeed(kb) {
+            if (!kb || kb <= 0) return '0 B/s';
+            if (kb < 1024) return `${kb.toFixed(0)} KB/s`;
+            return `${(kb / 1024).toFixed(1)} MB/s`;
+        }
+
+        function formatUptime(seconds) {
+            if (!seconds || seconds <= 0) return '離線';
+            const days = Math.floor(seconds / 86400);
+            const hours = Math.floor((seconds % 86400) / 3600);
+            const mins = Math.floor((seconds % 3600) / 60);
+            if (days > 0) return `${days} 天 ${hours} 小時`;
+            if (hours > 0) return `${hours} 小時 ${mins} 分鐘`;
+            return `${mins} 分鐘`;
+        }
+
+        function formatTime(isoStr) {
+            if (!isoStr) return new Date().toLocaleTimeString('zh-HK');
+            try {
+                const d = new Date(isoStr);
+                return d.toLocaleTimeString('zh-HK', { hour12: true });
+            } catch (e) {
+                return isoStr;
+            }
+        }
+
+        function renderServers(servers) {
+            const grid = document.getElementById('server-grid');
+            if (!servers || servers.length === 0) {
+                grid.innerHTML = '<div class="col-span-full text-center py-12 text-gray-400">目前暫無任何連線中的伺服器</div>';
+                return;
+            }
+
+            grid.innerHTML = servers.map(s => {
+                const flag = getFlag(s.country);
+                const locationStr = `${s.country || ''} ${s.city || ''}`.trim() || '未知節點';
+
+                const cpuPct = (s.cpu || 0).toFixed(1);
+                const loadStr = s.load1 !== undefined ? s.load1.toFixed(2) : '0.00';
+
+                const memUsed = (s.mem_used || 0).toFixed(1);
+                const memTotal = (s.mem_total || 0).toFixed(1);
+                const memPct = s.mem_total ? ((s.mem_used / s.mem_total) * 100).toFixed(1) : 0;
+
+                const diskUsed = (s.disk_used || 0).toFixed(1);
+                const diskTotal = (s.disk_total || 0).toFixed(1);
+                const diskPct = s.disk_total ? ((s.disk_used / s.disk_total) * 100).toFixed(1) : 0;
+
+                const cumTotalGB = ((s.cum_in || 0) + (s.cum_out || 0));
+                const trafficLimitGB = s.traffic_limit || 0;
+                const trafficPct = trafficLimitGB > 0 ? Math.min(100, ((cumTotalGB / trafficLimitGB) * 100)).toFixed(1) : 0;
+                const trafficDisplay = trafficLimitGB > 0 
+                    ? `${cumTotalGB.toFixed(2)} GB / ${trafficLimitGB} GB`
+                    : `${cumTotalGB.toFixed(2)} GB / 不限`;
+
+                const upSpeed = formatSpeed(s.net_tx);
+                const downSpeed = formatSpeed(s.net_rx);
+
+                return `
+                <div class="glass-card rounded-2xl p-5 shadow-sm border border-emerald-100 relative overflow-hidden">
+                    <div class="flex items-center justify-between pb-3 border-b border-gray-100 mb-4">
+                        <div class="flex items-center space-x-2">
+                            <span class="w-3 h-3 rounded-full bg-emerald-500 animate-pulse inline-block"></span>
+                            <h3 class="font-bold text-gray-800 text-base">${s.name || s.id}</h3>
+                        </div>
+                        <div class="text-xs bg-gray-100 text-gray-600 px-2.5 py-1 rounded-full font-medium">
+                            ${flag} ${locationStr}
+                        </div>
+                    </div>
+
+                    <div class="space-y-3 text-xs">
+                        <div>
+                            <div class="flex justify-between mb-1">
+                                <span class="text-gray-500 font-medium">CPU</span>
+                                <span class="font-semibold text-gray-700">${cpuPct}% <span class="text-gray-400 text-[10px]">(${loadStr})</span></span>
+                            </div>
+                            <div class="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                                <div class="bg-emerald-500 h-1.5 progress-bar-fill" style="width: ${Math.min(100, cpuPct)}%"></div>
+                            </div>
+                        </div>
+
+                        <div>
+                            <div class="flex justify-between mb-1">
+                                <span class="text-gray-500 font-medium">記憶體</span>
+                                <span class="font-semibold text-gray-700">${memPct}% <span class="text-gray-400 text-[10px]">(${memUsed} GB / ${memTotal} GB)</span></span>
+                            </div>
+                            <div class="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                                <div class="bg-blue-500 h-1.5 progress-bar-fill" style="width: ${Math.min(100, memPct)}%"></div>
+                            </div>
+                        </div>
+
+                        <div>
+                            <div class="flex justify-between mb-1">
+                                <span class="text-gray-500 font-medium">硬碟</span>
+                                <span class="font-semibold text-gray-700">${diskPct}% <span class="text-gray-400 text-[10px]">(${diskUsed} GB / ${diskTotal} GB)</span></span>
+                            </div>
+                            <div class="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                                <div class="bg-purple-500 h-1.5 progress-bar-fill" style="width: ${Math.min(100, diskPct)}%"></div>
+                            </div>
+                        </div>
+
+                        <div>
+                            <div class="flex justify-between mb-1">
+                                <span class="text-gray-500 font-medium">流量</span>
+                                <span class="font-semibold text-gray-700">${trafficPct}% <span class="text-gray-400 text-[10px]">(${trafficDisplay})</span></span>
+                            </div>
+                            <div class="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                                <div class="bg-amber-500 h-1.5 progress-bar-fill" style="width: ${Math.min(100, trafficPct)}%"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mt-4 pt-3 border-t border-gray-100 grid grid-cols-2 gap-2 text-xs text-gray-600">
+                        <div><span class="text-emerald-600">↑</span> ${upSpeed} <span class="text-blue-600 ml-1">↓</span> ${downSpeed}</div>
+                        <div class="text-right text-gray-500">⏱️ 在線: ${formatUptime(s.uptime)}</div>
+                    </div>
+
+                    <div class="mt-3 flex items-center justify-between text-[11px] gap-1">
+                        <span class="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded font-mono flex-1 text-center">電信: ${s.latency_telecom ? s.latency_telecom + 'ms' : '-ms'}</span>
+                        <span class="bg-blue-50 text-blue-700 px-2 py-0.5 rounded font-mono flex-1 text-center">聯通: ${s.latency_unicom ? s.latency_unicom + 'ms' : '-ms'}</span>
+                        <span class="bg-orange-50 text-orange-700 px-2 py-0.5 rounded font-mono flex-1 text-center">移動: ${s.latency_mobile ? s.latency_mobile + 'ms' : '-ms'}</span>
+                    </div>
+
+                    <div class="mt-2 text-[10px] text-gray-400 text-right">
+                        更新於: ${formatTime(s.last_seen)}
+                    </div>
+                </div>
+                `;
+            }).join('');
+        }
+
+        async function fetchStatus() {
+            try {
+                const res = await fetch('/api/servers');
+                if (res.ok) {
+                    const data = await res.json();
+                    renderServers(Array.isArray(data) ? data : []);
+                }
+            } catch (err) {
+                console.error("拉取狀態失敗:", err);
+            }
+        }
+
+        fetchStatus();
+        setInterval(fetchStatus, 3000);
+    </script>
+</body>
+</html>

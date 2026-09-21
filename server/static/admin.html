@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>管理後台 - 伺服器監控</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>body { background-color: #f8fafc; }</style>
+</head>
+<body class="min-h-screen pb-12 text-gray-800">
+
+    <!-- 自訂 Modal 彈窗 (代替瀏覽器原生 alert，無 IP / 網域標頭) -->
+    <div id="custom-modal" class="hidden fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl p-6 max-w-sm w-full shadow-xl text-center transform transition-all">
+            <div id="modal-icon" class="text-3xl mb-2">ℹ️</div>
+            <h3 id="modal-title" class="text-lg font-bold text-gray-800 mb-2">系統提示</h3>
+            <p id="modal-msg" class="text-sm text-gray-600 mb-6 break-words"></p>
+            <button onclick="closeModal()" class="w-full bg-emerald-600 text-white font-medium py-2 rounded-xl hover:bg-emerald-700 transition">
+                確定
+            </button>
+        </div>
+    </div>
+
+    <!-- 1. 登入頁面 (未認證時顯示) -->
+    <div id="login-view" class="max-w-md mx-auto pt-20 px-4">
+        <div class="bg-white rounded-2xl p-8 shadow-sm border border-gray-200 text-center">
+            <div class="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">
+                🔒
+            </div>
+            <h2 class="text-xl font-bold text-gray-900 mb-2">管理後台身份驗證</h2>
+            <p class="text-xs text-gray-500 mb-6">請輸入管理員密碼以進入控制台</p>
+            
+            <form onsubmit="handleLogin(event)" class="space-y-4">
+                <input type="password" id="loginPassword" placeholder="輸入 ADMIN_SECRET" class="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-center focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+                <button type="submit" class="w-full bg-emerald-600 text-white font-medium py-2.5 rounded-lg hover:bg-emerald-700 transition">進入後台</button>
+            </form>
+            
+            <div class="mt-6 text-center">
+                <a href="/" class="text-xs text-gray-400 hover:text-gray-600">← 返回監控首頁</a>
+            </div>
+        </div>
+    </div>
+
+    <!-- 2. 管理面板 (登入後顯示) -->
+    <div id="admin-dashboard" class="hidden max-w-4xl mx-auto px-4 pt-6">
+        <div class="flex justify-between items-center mb-6">
+            <h1 class="text-2xl font-bold text-gray-900">⚙️ 監控系統管理後台</h1>
+            <div class="flex gap-2">
+                <button onclick="handleLogout()" class="text-sm bg-red-50 text-red-600 px-3 py-1.5 rounded-lg hover:bg-red-100 transition">登出</button>
+                <a href="/" class="text-sm bg-gray-200 hover:bg-gray-300 text-gray-700 px-3 py-1.5 rounded-lg transition">← 返回首頁</a>
+            </div>
+        </div>
+
+        <!-- 機器管理列表 -->
+        <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-200 mb-6">
+            <h2 class="text-lg font-bold text-gray-800 mb-4 flex items-center justify-between">
+                <span>💻 機器管理列表</span>
+                <button onclick="loadAdminServers()" class="text-xs bg-emerald-50 text-emerald-600 px-3 py-1 rounded-md hover:bg-emerald-100">重新整理</button>
+            </h2>
+            <div id="admin-server-list" class="space-y-4">
+                <p class="text-gray-400 text-sm">正在載入機器資料...</p>
+            </div>
+        </div>
+
+        <!-- 系統通知設定 -->
+        <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-200">
+            <h2 class="text-lg font-bold text-gray-800 mb-4">🔔 系統告警與通知設定</h2>
+            <form onsubmit="saveNotifyConfig(event)" class="space-y-4 text-sm">
+                <div class="flex gap-6">
+                    <label class="flex items-center space-x-2"><input type="checkbox" id="enableTg" class="rounded text-emerald-600"> <span>啟用 Telegram</span></label>
+                    <label class="flex items-center space-x-2"><input type="checkbox" id="enableWebhook" class="rounded text-emerald-600"> <span>啟用 Webhook</span></label>
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-500 mb-1">Telegram Bot Token</label>
+                    <input type="text" id="tgToken" placeholder="例如: 123456:ABC..." class="w-full border border-gray-300 rounded-lg px-3 py-2">
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-500 mb-1">Telegram Chat ID</label>
+                    <input type="text" id="tgChatId" placeholder="例如: -100xxxx" class="w-full border border-gray-300 rounded-lg px-3 py-2">
+                </div>
+
+                <div>
+                    <label class="block text-xs text-gray-500 mb-1">Webhook URL</label>
+                    <input type="text" id="webhookUrl" placeholder="https://..." class="w-full border border-gray-300 rounded-lg px-3 py-2">
+                </div>
+
+                <div class="grid grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-xs text-gray-500 mb-1">離線判定 (分鐘)</label>
+                        <input type="number" id="offlineMin" value="5" class="w-full border border-gray-300 rounded-lg px-3 py-2">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-500 mb-1">CPU 閾值 (%)</label>
+                        <input type="number" id="cpuThreshold" value="90" class="w-full border border-gray-300 rounded-lg px-3 py-2">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-500 mb-1">記憶體閾值 (%)</label>
+                        <input type="number" id="memThreshold" value="90" class="w-full border border-gray-300 rounded-lg px-3 py-2">
+                    </div>
+                </div>
+
+                <div class="flex gap-3 pt-2">
+                    <button type="submit" class="bg-emerald-600 text-white px-5 py-2 rounded-lg font-medium hover:bg-emerald-700 transition">儲存通知設定</button>
+                    <button type="button" onclick="testNotify()" class="bg-gray-700 text-white px-5 py-2 rounded-lg font-medium hover:bg-gray-800 transition">發送測試通知</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        let adminSecret = sessionStorage.getItem('ADMIN_SECRET') || '';
+
+        function showModal(msg, title = "系統提示", icon = "ℹ️") {
+            document.getElementById('modal-title').innerText = title;
+            document.getElementById('modal-msg').innerText = msg;
+            document.getElementById('modal-icon').innerText = icon;
+            document.getElementById('custom-modal').classList.remove('hidden');
+        }
+
+        function closeModal() {
+            document.getElementById('custom-modal').classList.add('hidden');
+        }
+
+        window.onload = function() {
+            if (adminSecret) {
+                showDashboard();
+            }
+        };
+
+        async function handleLogin(e) {
+            e.preventDefault();
+            const input = document.getElementById('loginPassword').value.trim();
+            if (!input) return showModal('請輸入密碼！', '驗證提醒', '⚠️');
+
+            adminSecret = input;
+            sessionStorage.setItem('ADMIN_SECRET', adminSecret);
+            
+            const ok = await loadNotifyConfig();
+            if (ok) {
+                showDashboard();
+            } else {
+                sessionStorage.removeItem('ADMIN_SECRET');
+                adminSecret = '';
+                showModal('登入失敗：管理員密碼錯誤！', '驗證失敗', '❌');
+            }
+        }
+
+        function handleLogout() {
+            sessionStorage.removeItem('ADMIN_SECRET');
+            adminSecret = '';
+            document.getElementById('login-view').classList.remove('hidden');
+            document.getElementById('admin-dashboard').classList.add('hidden');
+        }
+
+        function showDashboard() {
+            document.getElementById('login-view').classList.add('hidden');
+            document.getElementById('admin-dashboard').classList.remove('hidden');
+            loadAdminServers();
+            loadNotifyConfig();
+        }
+
+        async function loadAdminServers() {
+            try {
+                const res = await fetch('/api/servers');
+                const servers = await res.json();
+                const listEl = document.getElementById('admin-server-list');
+
+                if (!servers || servers.length === 0) {
+                    listEl.innerHTML = '<p class="text-gray-400 text-sm">目前無已註冊的機器。</p>';
+                    return;
+                }
+
+                listEl.innerHTML = servers.map(s => `
+                    <div class="p-4 border border-gray-100 bg-gray-50 rounded-xl space-y-3">
+                        <div class="flex justify-between items-center">
+                            <span class="font-bold text-gray-800">${s.name || s.id} <span class="text-xs text-gray-400 font-mono">(${s.id})</span></span>
+                            <button onclick="resetTraffic('${s.id}')" class="text-xs bg-red-50 text-red-600 px-2.5 py-1 rounded hover:bg-red-100">重設月流量統計</button>
+                        </div>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                            <div class="flex items-center gap-2">
+                                <input type="text" id="name-${s.id}" value="${s.name || ''}" placeholder="新名稱" class="border px-2 py-1 rounded w-full">
+                                <button onclick="updateName('${s.id}')" class="bg-blue-600 text-white px-3 py-1 rounded">修改名稱</button>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <input type="number" id="limit-${s.id}" value="${s.traffic_limit || 0}" placeholder="流量限額(GB)" class="border px-2 py-1 rounded w-full">
+                                <button onclick="updateLimit('${s.id}')" class="bg-purple-600 text-white px-3 py-1 rounded">更新限額</button>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        async function loadNotifyConfig() {
+            try {
+                const res = await fetch(`/api/admin/notify?admin_secret=${encodeURIComponent(adminSecret)}`);
+                if (!res.ok) return false;
+                const cfg = await res.json();
+                
+                document.getElementById('enableTg').checked = cfg.telegram_enabled ?? cfg.enable_tg ?? false;
+                document.getElementById('enableWebhook').checked = cfg.webhook_enabled ?? cfg.enable_webhook ?? false;
+                document.getElementById('tgToken').value = cfg.telegram_bot_token || cfg.tg_bot_token || '';
+                document.getElementById('tgChatId').value = cfg.telegram_chat_id || cfg.tg_chat_id || '';
+                document.getElementById('webhookUrl').value = cfg.webhook_url || '';
+                document.getElementById('offlineMin').value = cfg.offline_minutes || cfg.offline_threshold_min || 5;
+                document.getElementById('cpuThreshold').value = cfg.cpu_threshold || 90;
+                document.getElementById('memThreshold').value = cfg.mem_threshold || 90;
+                return true;
+            } catch (e) {
+                return false;
+            }
+        }
+
+        async function saveNotifyConfig(e) {
+            e.preventDefault();
+            const payload = {
+                admin_secret: adminSecret,
+                telegram_enabled: document.getElementById('enableTg').checked,
+                telegram_bot_token: document.getElementById('tgToken').value,
+                telegram_chat_id: document.getElementById('tgChatId').value,
+                webhook_enabled: document.getElementById('enableWebhook').checked,
+                webhook_url: document.getElementById('webhookUrl').value,
+                offline_minutes: parseInt(document.getElementById('offlineMin').value) || 5,
+                cpu_threshold: parseFloat(document.getElementById('cpuThreshold').value) || 90,
+                mem_threshold: parseFloat(document.getElementById('memThreshold').value) || 90
+            };
+
+            await apiPost('/api/admin/notify', payload, '通知設定已成功儲存！');
+        }
+
+        async function testNotify() {
+            await apiPost('/api/admin/test-notify', { admin_secret: adminSecret }, '測試通知已發送！請檢查 Telegram 或 Webhook。');
+        }
+
+        async function updateName(id) {
+            const name = document.getElementById(`name-${id}`).value;
+            await apiPost('/api/admin/rename', { admin_secret: adminSecret, id, name }, '名稱更新成功！');
+        }
+
+        async function updateLimit(id) {
+            const limit = parseFloat(document.getElementById(`limit-${id}`).value) || 0;
+            await apiPost('/api/admin/update-traffic-limit', { 
+                admin_secret: adminSecret, 
+                id, 
+                traffic_limit: limit,
+                traffic_notify_percent: 80.0
+            }, '流量上限更新成功！');
+        }
+
+        async function resetTraffic(id) {
+            await apiPost('/api/admin/reset-traffic', { admin_secret: adminSecret, id }, '流量已成功重設！');
+        }
+
+        async function apiPost(url, payload, successMsg) {
+            try {
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (res.ok) {
+                    showModal(successMsg, '操作成功', '✅');
+                    loadAdminServers();
+                } else {
+                    showModal('操作失敗：' + await res.text(), '操作失敗', '❌');
+                }
+            } catch (e) {
+                showModal('請求失敗：' + e.message, '網路錯誤', '❌');
+            }
+        }
+    </script>
+</body>
+</html>

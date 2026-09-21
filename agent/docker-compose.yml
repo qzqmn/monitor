@@ -1,0 +1,26 @@
+# 在「每台被監控的機器」上使用此檔案
+# 用法：改 MONITOR_URL、REPORT_SECRET 後執行 docker compose up -d --build
+
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: vps-monitor-agent:latest
+    container_name: vps-monitor-agent
+    restart: unless-stopped
+
+    # Linux 上建議 host，網卡流量統計較準
+    network_mode: host
+
+    environment:
+      # 必填：中央端地址（不要末尾斜線也可）
+      - MONITOR_URL=http://100.110.17.54:48080
+      # 必填：與中央端 docker-compose 的 REPORT_SECRET 相同
+      - REPORT_SECRET=report-secret-77889900
+      # 可選：不上報間隔秒數（預設 20）
+      - INTERVAL_SECS=20
+      # 可選：不填則自動用本機 hostname 作為 AGENT_ID / 顯示名
+      # - AGENT_ID=oracle-tokyo
+      # - AGENT_NAME=Oracle-日本東京
+      - RUST_LOG=info
