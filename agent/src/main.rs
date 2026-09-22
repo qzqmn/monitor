@@ -215,6 +215,29 @@ async fn send_report(client: &reqwest::Client, url: &str, report: &Report) -> Re
     Ok(())
 }
 
+// 監聽 SIGTERM / Ctrl+C，等收到就完成呢個 future。
+// 用喺 tokio::select! 入面同「等落一次上報」做競賽，邊個先到就邊個贏，
+// 咁樣 docker stop 送 SIGTERM 落嚟就即刻退出 loop，唔使等成個 interval 完。
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -258,6 +281,15 @@ async fn main() -> Result<()> {
             ),
             Err(e) => error!("report failed: {:?}", e),
         }
-        tokio::time::sleep(Duration::from_secs(cfg.interval_secs)).await;
+
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(cfg.interval_secs)) => {}
+            _ = shutdown_signal() => {
+                info!("shutdown signal received, exiting");
+                break;
+            }
+        }
     }
+
+    Ok(())
 }
