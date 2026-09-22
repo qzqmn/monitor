@@ -9,14 +9,15 @@ services:
     image: vps-monitor-agent:latest
     container_name: vps-monitor-agent
     restart: unless-stopped
+    init: true
 
     # Linux 上建議 host，網卡流量統計較準
     network_mode: host
 
     environment:
-      # 必填：中央端地址（不要末尾斜線也可）
-      - MONITOR_URL=http://100.110.17.54:48080
-      # 必填：與中央端 docker-compose 的 REPORT_SECRET 相同
+      # 必填：中央端地址（不要末尾斜線也可）自行修改
+      - MONITOR_URL=http://127.0.0.1:8080
+      # 必填：與中央端 docker-compose 的 REPORT_SECRET 相同(自行修改)
       - REPORT_SECRET=report-secret-77889900
       # 可選：不上報間隔秒數（預設 20）
       - INTERVAL_SECS=20
