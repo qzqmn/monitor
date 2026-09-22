@@ -60,7 +60,31 @@ async fn main() -> anyhow::Result<()> {
     let addr = "0.0.0.0:8080";
     tracing::info!("listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
     Ok(())
+}
+
+// 監聽 SIGTERM / Ctrl+C，收到就完成呢個 future，等 axum 做優雅關閉：
+// 停止接受新連線、等緊做嘅 request 做完先退出，唔使等 docker 嘅 10 秒 grace period 完先俾 SIGKILL 強殺。
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
 }
