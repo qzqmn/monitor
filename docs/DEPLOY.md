@@ -31,29 +31,35 @@ ssh root@你的IP
 cd /root && unzip vps-monitor.zip && cd vps-monitor
 ```
 
-### 3. 修改密鑰（必做）
+> 中央端映像由 GitHub Actions 自動建置並推到 `ghcr.io`，主機上**不需要**安裝 Rust 工具鏈，`docker compose` 只會拉現成映像。
+
+### 3. 設定密鑰（必做）
+
+複製範例並修改：
 
 ```bash
-nano docker-compose.yml
+cp .env.example .env
+nano .env
 ```
 
-修改：
+至少要改：
 
-```yaml
-- REPORT_SECRET=改成很長的隨機字串
-- ADMIN_SECRET=改成另一個管理密碼
+```bash
+REPORT_SECRET=改成很長的隨機字串   # openssl rand -hex 32
+ADMIN_SECRET=改成另一個管理密碼    # openssl rand -hex 32
 ```
 
-儲存退出（Ctrl+O、Enter、Ctrl+X）。
+`.env` 不會被提交進 git（已在 `.gitignore` 裡），密鑰只留在伺服器上。
 
 ### 4. 啟動
 
 ```bash
 cd /root/vps-monitor
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
-第一次編譯較久（約數分鐘）。完成後：
+完成後：
 
 ```bash
 docker compose ps
@@ -61,6 +67,8 @@ docker compose logs -f
 ```
 
 看到 `listening on 0.0.0.0:8080` 即成功。
+
+> 如果你想改原始碼後自己建置測試（而不是用 ghcr 上的映像），把 `docker-compose.yml` 裡的 `image:` 那行註解掉、取消 `build:` 區塊的註解，再 `docker compose up -d --build`。
 
 ### 5. 訪問
 
@@ -75,7 +83,7 @@ docker compose logs -f
 docker compose restart    # 重啟
 docker compose logs -f    # 看日誌
 docker compose down       # 停止
-docker compose up -d --build   # 改程式後重新建置
+docker compose pull && docker compose up -d   # 更新到最新映像
 ```
 
 資料保存在 `./data/monitor.db`。
@@ -95,15 +103,21 @@ cd vps-monitor
 # 編譯當前架構
 cargo build -p vps-monitor-agent --release
 
-# 交叉編譯 ARM64（例如 Oracle ARM）
+# 交叉編譯 ARM64、glibc（例如 Oracle ARM VPS，跑一般發行版）
 rustup target add aarch64-unknown-linux-gnu
 cargo build -p vps-monitor-agent --release --target aarch64-unknown-linux-gnu
+
+# 交叉編譯 ARM64、musl（postmarketOS / Alpine 系統要用這個，不是 -gnu；
+# 建議用 `cross` 處理 linker，直接 rustup target add 通常編不過）
+cargo install cross --git https://github.com/cross-rs/cross
+cross build -p vps-monitor-agent --release --target aarch64-unknown-linux-musl
 ```
 
 產出檔案：
 
 - x86_64：`target/release/vps-monitor-agent`
-- ARM64：`target/aarch64-unknown-linux-gnu/release/vps-monitor-agent`
+- ARM64（glibc）：`target/aarch64-unknown-linux-gnu/release/vps-monitor-agent`
+- ARM64（musl / pmOS）：`target/aarch64-unknown-linux-musl/release/vps-monitor-agent`
 
 #### 2. 複製到被監控機器
 
@@ -152,18 +166,12 @@ journalctl -u vps-monitor-agent -f
 
 ```bash
 cd vps-monitor/agent
-docker build -t vps-monitor-agent .
-docker run -d --name agent --restart unless-stopped \
-  -e MONITOR_URL=http://中央端IP:8080 \
-  -e AGENT_ID=my-vps-1 \
-  -e AGENT_NAME=我的VPS1 \
-  -e REPORT_SECRET=與中央端相同 \
-  -e INTERVAL_SECS=20 \
-  --net host \
-  vps-monitor-agent
+cp .env.example .env   # 填 MONITOR_URL / REPORT_SECRET
+docker compose pull
+docker compose up -d
 ```
 
-`--net host` 較容易正確統計網卡流量；若不行可改橋接並接受流量統計略有偏差。
+同樣是拉 ghcr 上 CI 建好的多架構映像，不用在被監控機器上裝 Rust 工具鏈。`network_mode: host` 較容易正確統計網卡流量；若不行可改橋接並接受流量統計略有偏差。
 
 ---
 
@@ -176,7 +184,8 @@ docker run -d --name agent --restart unless-stopped \
 
 ## 五、防火牆
 
-中央端需放行 **8080**（或你改的端口）。  
+中央端需放行 **8080**（或你改的端口）給需要看面板 / Agent 需要上報的來源。  
+**建議只對 Tailscale 網段開放**，不要直接對公網開放明碼 HTTP：把 `docker-compose.yml` 的 port 映射改成綁定 Tailscale IP，例如 `"100.x.x.x:8080:8080"`，要對外公開再另外套 Caddy/Nginx 反向代理 + HTTPS。  
 Agent 只需出站訪問中央端，一般不用開入站端口。
 
 ---

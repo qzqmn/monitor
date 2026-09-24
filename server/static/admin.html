@@ -110,7 +110,21 @@
     </div>
 
     <script>
+        // 密碼一律從 Authorization: Bearer 帶出去，不再放進 URL query 或 JSON body
+        // （query string 會被反向代理、瀏覽器歷史記錄下來；body 裡混著業務欄位也容易
+        // 不小心整包被記錄或轉發）。sessionStorage 只是「這個分頁記得你已經登入」，
+        // 真正的驗證由伺服器的 require_admin 中介層做。
         let adminSecret = sessionStorage.getItem('ADMIN_SECRET') || '';
+
+        function esc(s) {
+            return String(s ?? '').replace(/[&<>"']/g, c => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[c]));
+        }
+
+        function authHeaders(extra = {}) {
+            return { 'Authorization': `Bearer ${adminSecret}`, ...extra };
+        }
 
         function showModal(msg, title = "系統提示", icon = "ℹ️") {
             document.getElementById('modal-title').innerText = title;
@@ -125,7 +139,11 @@
 
         window.onload = function() {
             if (adminSecret) {
-                showDashboard();
+                // 分頁記得密碼不代表密碼還有效（例如已經換過 ADMIN_SECRET），
+                // 一律先打一個受保護的端點驗證，401 就退回登入頁。
+                loadNotifyConfig().then(ok => {
+                    if (ok) showDashboard(); else handleLogout();
+                });
             }
         };
 
@@ -135,13 +153,12 @@
             if (!input) return showModal('請輸入密碼！', '驗證提醒', '⚠️');
 
             adminSecret = input;
-            sessionStorage.setItem('ADMIN_SECRET', adminSecret);
-            
+
             const ok = await loadNotifyConfig();
             if (ok) {
+                sessionStorage.setItem('ADMIN_SECRET', adminSecret);
                 showDashboard();
             } else {
-                sessionStorage.removeItem('ADMIN_SECRET');
                 adminSecret = '';
                 showModal('登入失敗：管理員密碼錯誤！', '驗證失敗', '❌');
             }
@@ -161,6 +178,18 @@
             loadNotifyConfig();
         }
 
+        // 機器列表用事件委派處理按鈕點擊，不再把 id / name 直接內插進
+        // onclick="...('${s.id}')" 字串裡——那種寫法只要 id 或 name 含有引號
+        // 就能跳出屬性、注入任意 JS。
+        document.getElementById('admin-server-list').addEventListener('click', (e) => {
+            const btn = e.target.closest('button[data-action]');
+            if (!btn) return;
+            const id = btn.dataset.id;
+            if (btn.dataset.action === 'rename') updateName(id);
+            if (btn.dataset.action === 'reset-traffic') resetTraffic(id);
+            if (btn.dataset.action === 'update-limit') updateLimit(id);
+        });
+
         async function loadAdminServers() {
             try {
                 const res = await fetch('/api/servers');
@@ -172,24 +201,27 @@
                     return;
                 }
 
-                listEl.innerHTML = servers.map(s => `
+                listEl.innerHTML = servers.map(s => {
+                    const idAttr = esc(s.id);
+                    return `
                     <div class="p-4 border border-gray-100 bg-gray-50 rounded-xl space-y-3">
                         <div class="flex justify-between items-center">
-                            <span class="font-bold text-gray-800">${s.name || s.id} <span class="text-xs text-gray-400 font-mono">(${s.id})</span></span>
-                            <button onclick="resetTraffic('${s.id}')" class="text-xs bg-red-50 text-red-600 px-2.5 py-1 rounded hover:bg-red-100">重設月流量統計</button>
+                            <span class="font-bold text-gray-800">${esc(s.name || s.id)} <span class="text-xs text-gray-400 font-mono">(${idAttr})</span></span>
+                            <button data-action="reset-traffic" data-id="${idAttr}" class="text-xs bg-red-50 text-red-600 px-2.5 py-1 rounded hover:bg-red-100">重設月流量統計</button>
                         </div>
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                             <div class="flex items-center gap-2">
-                                <input type="text" id="name-${s.id}" value="${s.name || ''}" placeholder="新名稱" class="border px-2 py-1 rounded w-full">
-                                <button onclick="updateName('${s.id}')" class="bg-blue-600 text-white px-3 py-1 rounded">修改名稱</button>
+                                <input type="text" class="rename-input border px-2 py-1 rounded w-full" data-id="${idAttr}" value="${esc(s.name || '')}" placeholder="新名稱">
+                                <button data-action="rename" data-id="${idAttr}" class="bg-blue-600 text-white px-3 py-1 rounded">修改名稱</button>
                             </div>
                             <div class="flex items-center gap-2">
-                                <input type="number" id="limit-${s.id}" value="${s.traffic_limit || 0}" placeholder="流量限額(GB)" class="border px-2 py-1 rounded w-full">
-                                <button onclick="updateLimit('${s.id}')" class="bg-purple-600 text-white px-3 py-1 rounded">更新限額</button>
+                                <input type="number" class="limit-input border px-2 py-1 rounded w-full" data-id="${idAttr}" value="${esc(s.traffic_limit || 0)}" placeholder="流量限額(GB)">
+                                <button data-action="update-limit" data-id="${idAttr}" class="bg-purple-600 text-white px-3 py-1 rounded">更新限額</button>
                             </div>
                         </div>
                     </div>
-                `).join('');
+                `;
+                }).join('');
             } catch (err) {
                 console.error(err);
             }
@@ -197,18 +229,20 @@
 
         async function loadNotifyConfig() {
             try {
-                const res = await fetch(`/api/admin/notify?admin_secret=${encodeURIComponent(adminSecret)}`);
+                const res = await fetch('/api/admin/notify', { headers: authHeaders() });
                 if (!res.ok) return false;
                 const cfg = await res.json();
-                
-                document.getElementById('enableTg').checked = cfg.telegram_enabled ?? cfg.enable_tg ?? false;
-                document.getElementById('enableWebhook').checked = cfg.webhook_enabled ?? cfg.enable_webhook ?? false;
-                document.getElementById('tgToken').value = cfg.telegram_bot_token || cfg.tg_bot_token || '';
-                document.getElementById('tgChatId').value = cfg.telegram_chat_id || cfg.tg_chat_id || '';
+
+                document.getElementById('enableTg').checked = cfg.telegram_enabled ?? false;
+                document.getElementById('enableWebhook').checked = cfg.webhook_enabled ?? false;
+                document.getElementById('tgToken').value = cfg.telegram_bot_token || '';
+                document.getElementById('tgChatId').value = cfg.telegram_chat_id || '';
                 document.getElementById('webhookUrl').value = cfg.webhook_url || '';
-                document.getElementById('offlineMin').value = cfg.offline_minutes || cfg.offline_threshold_min || 5;
-                document.getElementById('cpuThreshold').value = cfg.cpu_threshold || 90;
-                document.getElementById('memThreshold').value = cfg.mem_threshold || 90;
+                document.getElementById('offlineMin').value = cfg.offline_minutes ?? 5;
+                // 用 ?? 而不是 ||：閾值 0 在後端代表「關閉此項告警」，
+                // `0 || 90` 會把它誤判成「沒填」而強制變回 90，導致無法真正關閉告警。
+                document.getElementById('cpuThreshold').value = cfg.cpu_threshold ?? 90;
+                document.getElementById('memThreshold').value = cfg.mem_threshold ?? 90;
                 return true;
             } catch (e) {
                 return false;
@@ -217,51 +251,58 @@
 
         async function saveNotifyConfig(e) {
             e.preventDefault();
+            const cpu = parseFloat(document.getElementById('cpuThreshold').value);
+            const mem = parseFloat(document.getElementById('memThreshold').value);
+            const offline = parseInt(document.getElementById('offlineMin').value, 10);
             const payload = {
-                admin_secret: adminSecret,
                 telegram_enabled: document.getElementById('enableTg').checked,
                 telegram_bot_token: document.getElementById('tgToken').value,
                 telegram_chat_id: document.getElementById('tgChatId').value,
                 webhook_enabled: document.getElementById('enableWebhook').checked,
                 webhook_url: document.getElementById('webhookUrl').value,
-                offline_minutes: parseInt(document.getElementById('offlineMin').value) || 5,
-                cpu_threshold: parseFloat(document.getElementById('cpuThreshold').value) || 90,
-                mem_threshold: parseFloat(document.getElementById('memThreshold').value) || 90
+                offline_minutes: Number.isNaN(offline) ? 5 : offline,
+                cpu_threshold: Number.isNaN(cpu) ? 90 : cpu,
+                mem_threshold: Number.isNaN(mem) ? 90 : mem,
             };
 
             await apiPost('/api/admin/notify', payload, '通知設定已成功儲存！');
         }
 
         async function testNotify() {
-            await apiPost('/api/admin/test-notify', { admin_secret: adminSecret }, '測試通知已發送！請檢查 Telegram 或 Webhook。');
+            await apiPost('/api/admin/test-notify', {}, '測試通知已發送！請檢查 Telegram 或 Webhook。');
         }
 
         async function updateName(id) {
-            const name = document.getElementById(`name-${id}`).value;
-            await apiPost('/api/admin/rename', { admin_secret: adminSecret, id, name }, '名稱更新成功！');
+            const input = document.querySelector(`.rename-input[data-id="${CSS.escape(id)}"]`);
+            await apiPost('/api/admin/rename', { id, name: input.value }, '名稱更新成功！');
         }
 
         async function updateLimit(id) {
-            const limit = parseFloat(document.getElementById(`limit-${id}`).value) || 0;
-            await apiPost('/api/admin/update-traffic-limit', { 
-                admin_secret: adminSecret, 
-                id, 
+            const input = document.querySelector(`.limit-input[data-id="${CSS.escape(id)}"]`);
+            const limit = parseFloat(input.value) || 0;
+            await apiPost('/api/admin/update-traffic-limit', {
+                id,
                 traffic_limit: limit,
                 traffic_notify_percent: 80.0
             }, '流量上限更新成功！');
         }
 
         async function resetTraffic(id) {
-            await apiPost('/api/admin/reset-traffic', { admin_secret: adminSecret, id }, '流量已成功重設！');
+            await apiPost('/api/admin/reset-traffic', { id }, '流量已成功重設！');
         }
 
         async function apiPost(url, payload, successMsg) {
             try {
                 const res = await fetch(url, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: authHeaders({ 'Content-Type': 'application/json' }),
                     body: JSON.stringify(payload)
                 });
+                if (res.status === 401) {
+                    showModal('登入已失效，請重新登入。', '需要重新驗證', '🔒');
+                    handleLogout();
+                    return;
+                }
                 if (res.ok) {
                     showModal(successMsg, '操作成功', '✅');
                     loadAdminServers();

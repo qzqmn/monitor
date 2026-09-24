@@ -1,0 +1,19 @@
+# Rust
+/target/
+server/target/
+agent/target/
+
+# 執行期資料庫（含明文 Telegram Token 等機敏設定），絕對不要進 git
+data/
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# 密鑰
+.env
+agent/.env
+
+# 編輯器 / OS
+.DS_Store
+*.swp

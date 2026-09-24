@@ -1,17 +1,22 @@
 services:
   monitor:
-    build:
-      context: ./server
-      dockerfile: Dockerfile
+    image: ghcr.io/${GHCR_OWNER:-qzqmn}/vps-monitor-server:latest
+    # 想改原始碼後自己建置測試（而不是拉 ghcr 上 CI 建好的映像），
+    # 就把上面的 image: 註解掉、改用下面這段：
+    # build:
+    #   context: ./server
+    #   dockerfile: Dockerfile
     container_name: vps-monitor
     restart: unless-stopped
     init: true
     ports:
-      - "8080:8080"
+      # 預設只綁 BIND_ADDR（.env 裡設定，預設 127.0.0.1），不會整台機器公網暴露。
+      # 要用 Tailscale 存取就把 .env 的 BIND_ADDR 改成你的 Tailscale IP。
+      - "${BIND_ADDR:-127.0.0.1}:${PORT:-8080}:8080"
     volumes:
       - ./data:/app/data
     environment:
       - RUST_LOG=info
       - DATABASE_URL=sqlite:/app/data/monitor.db?mode=rwc
-      - REPORT_SECRET=report-secret-77889900 #自行修改
-      - ADMIN_SECRET=admin-secret-77889900 #自行修改
+      - REPORT_SECRET=${REPORT_SECRET:?請先執行 cp .env.example .env 並修改 REPORT_SECRET}
+      - ADMIN_SECRET=${ADMIN_SECRET:?請先執行 cp .env.example .env 並修改 ADMIN_SECRET}

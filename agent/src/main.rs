@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use std::{env, time::Duration};
 use sysinfo::{Disks, Networks, System};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 #[derive(Serialize)]
 struct Report {
@@ -39,6 +39,19 @@ struct Config {
     agent_name: String,
     secret: String,
     interval_secs: u64,
+    net_ifaces: Option<Vec<String>>,
+}
+
+/// 預設要排除的虛擬/內部網卡：loopback、Docker 網橋與 veth、Tailscale、
+/// WireGuard、libvirt、CNI 等。這些介面的流量要嘛是本機內部流量（不該算
+/// 對外流量），要嘛會在容器重建時消失又出現，讓上報的計數器忽大忽小，
+/// 誤觸「重開機」判斷把整個計數器灌進累計流量。真的要監控這些介面可以用
+/// NET_IFACES 白名單覆蓋這個預設排除清單。
+fn is_virtual_iface(name: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "lo", "docker", "br-", "veth", "virbr", "tailscale", "wg", "cni", "flannel", "cali",
+    ];
+    PREFIXES.iter().any(|p| name.starts_with(p))
 }
 
 fn hostname() -> String {
@@ -72,6 +85,20 @@ fn load_config() -> Result<Config> {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(20),
+        // 可選：手動指定要統計的網卡名稱（逗號分隔，例如 "eth0,ens18"）。
+        // 沒設定或設成空字串就用 is_virtual_iface 的預設黑名單排除法——
+        // 這裡一定要把空字串也當成「沒設定」，否則 docker-compose 用
+        // `${NET_IFACES:-}` 帶出空字串時，會被解析成「白名單清單是空的」，
+        // 導致所有網卡都被排除、流量直接變成 0。
+        net_ifaces: env::var("NET_IFACES")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| {
+                s.split(',')
+                    .map(|x| x.trim().to_string())
+                    .filter(|x| !x.is_empty())
+                    .collect()
+            }),
     })
 }
 
@@ -151,9 +178,15 @@ fn collect_metrics(
     let networks = Networks::new_with_refreshed_list();
     let mut total_rx = 0u64;
     let mut total_tx = 0u64;
-    for (_name, data) in networks.list() {
-        total_rx += data.total_received();
-        total_tx += data.total_transmitted();
+    for (name, data) in networks.list() {
+        let counted = match &cfg.net_ifaces {
+            Some(allowlist) => allowlist.iter().any(|a| a == name),
+            None => !is_virtual_iface(name),
+        };
+        if counted {
+            total_rx += data.total_received();
+            total_tx += data.total_transmitted();
+        }
     }
 
     // 速率 KB/s（與上次差值 / 間隔近似，首次為 0）

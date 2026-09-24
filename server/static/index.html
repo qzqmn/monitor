@@ -42,6 +42,16 @@
     </main>
 
     <script>
+        // 伺服器回傳的 name / country / city 全部來自 Agent 上報，理論上任何一台
+        // 持有 REPORT_SECRET 的機器都能把這些欄位改成任意字串。以前直接塞進
+        // innerHTML，等於讓上報者能在管理者的瀏覽器裡跑任意 JS（儲存型 XSS）。
+        // 一律用 esc() 轉義後才輸出。
+        function esc(s) {
+            return String(s ?? '').replace(/[&<>"']/g, c => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[c]));
+        }
+
         function getFlag(country) {
             if (!country) return '🌐';
             const c = country.toUpperCase();
@@ -89,7 +99,14 @@
 
             grid.innerHTML = servers.map(s => {
                 const flag = getFlag(s.country);
-                const locationStr = `${s.country || ''} ${s.city || ''}`.trim() || '未知節點';
+                const locationStr = esc(`${s.country || ''} ${s.city || ''}`.trim() || '未知節點');
+                const displayName = esc(s.name || s.id);
+
+                // 是否在線改由伺服器依 last_seen 計算後回傳的 online 欄位判斷，
+                // 不再是寫死的綠燈；離線時整張卡片淡化、圓點變灰，一眼就看得出來。
+                const online = s.online !== false;
+                const dotClass = online ? 'bg-emerald-500 animate-pulse' : 'bg-gray-400';
+                const cardClass = online ? '' : 'opacity-60';
 
                 const cpuPct = (s.cpu || 0).toFixed(1);
                 const loadStr = s.load1 !== undefined ? s.load1.toFixed(2) : '0.00';
@@ -113,11 +130,11 @@
                 const downSpeed = formatSpeed(s.net_rx);
 
                 return `
-                <div class="glass-card rounded-2xl p-5 shadow-sm border border-emerald-100 relative overflow-hidden">
+                <div class="glass-card rounded-2xl p-5 shadow-sm border border-emerald-100 relative overflow-hidden ${cardClass}">
                     <div class="flex items-center justify-between pb-3 border-b border-gray-100 mb-4">
                         <div class="flex items-center space-x-2">
-                            <span class="w-3 h-3 rounded-full bg-emerald-500 animate-pulse inline-block"></span>
-                            <h3 class="font-bold text-gray-800 text-base">${s.name || s.id}</h3>
+                            <span class="w-3 h-3 rounded-full ${dotClass} inline-block"></span>
+                            <h3 class="font-bold text-gray-800 text-base">${displayName}</h3>
                         </div>
                         <div class="text-xs bg-gray-100 text-gray-600 px-2.5 py-1 rounded-full font-medium">
                             ${flag} ${locationStr}

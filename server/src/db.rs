@@ -1,7 +1,11 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::SqlitePoolOptions, FromRow, SqlitePool};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    FromRow, SqlitePool,
+};
 use anyhow::Result;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct ServerStatus {
@@ -66,14 +70,12 @@ pub struct Latency {
 #[derive(Debug, Deserialize)]
 pub struct AdminResetTraffic {
     pub id: String,
-    pub admin_secret: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct AdminRename {
     pub id: String,
     pub name: String,
-    pub admin_secret: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,12 +83,10 @@ pub struct AdminUpdateTrafficLimit {
     pub id: String,
     pub traffic_limit: f64,
     pub traffic_notify_percent: f64,
-    pub admin_secret: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct AdminNotifySettings {
-    pub admin_secret: String,
     pub telegram_enabled: bool,
     pub telegram_bot_token: String,
     pub telegram_chat_id: String,
@@ -110,10 +110,28 @@ pub struct UpsertResult {
     pub traffic_notify_percent: f64,
 }
 
+/// 機器 id 會被拿去組資料庫 primary key、也會被前端當成 HTML 屬性值使用
+/// （例如 `id="name-${s.id}"`），限制字元集可以同時防止奇怪的 id 造成
+/// 前端渲染出錯或被拿來做 XSS/HTML 注入。
+pub fn valid_id(id: &str) -> bool {
+    static RE: once_cell::sync::Lazy<regex::Regex> =
+        once_cell::sync::Lazy::new(|| regex::Regex::new(r"^[A-Za-z0-9._-]{1,64}$").unwrap());
+    RE.is_match(id)
+}
+
+/// 顯示名稱 / 國家 / 城市這類自由文字欄位不限制字元（才能顯示中文等），
+/// 但截斷長度，避免有人塞超長字串撐爆卡片版面或洗版資料庫。
+pub fn clip(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
+}
+
 pub async fn init_db(database_url: &str) -> Result<SqlitePool> {
+    // `create_if_missing` 讓伺服器在 DATABASE_URL 沒帶 `?mode=rwc`（例如映像檔的預設值）
+    // 且資料庫檔案第一次不存在時，仍能自動建立，而不是直接崩潰退出。
+    let opts = SqliteConnectOptions::from_str(database_url)?.create_if_missing(true);
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
-        .connect(database_url)
+        .connect_with(opts)
         .await?;
 
     sqlx::query(
@@ -167,7 +185,9 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool> {
 }
 
 pub async fn upsert_server(pool: &SqlitePool, payload: &ReportPayload) -> Result<UpsertResult> {
-    let name = payload.name.clone().unwrap_or_else(|| payload.id.clone());
+    let name = clip(&payload.name.clone().unwrap_or_else(|| payload.id.clone()), 64);
+    let country = payload.country.as_deref().map(|c| clip(c, 8));
+    let city = payload.city.as_deref().map(|c| clip(c, 64));
     let now = Utc::now();
 
     let (lt, lu, lm) = match &payload.latency {
@@ -187,16 +207,29 @@ pub async fn upsert_server(pool: &SqlitePool, payload: &ReportPayload) -> Result
             let mut new_cum_in = old.cum_in;
             let mut new_cum_out = old.cum_out;
 
-            let mut delta_in = payload.traffic_in - old.last_raw_in;
-            if delta_in < 0.0 {
-                delta_in = payload.traffic_in;
-            }
+            // 機器真的重開機時 uptime 會歸零/變小；只有這種情況才能確定網卡計數器
+            // 也被系統重置了，這時候才把「這次上報的原始值」整個當作增量加回去。
+            // 如果 uptime 沒有變小但計數器卻變小了（常見於 docker/veth 介面消失重建、
+            // NIC 驅動重置等），那只是雜訊，不是真流量，增量記 0，避免把整個計數器
+            // 的值誤當成新增流量灌進累計裡。
+            let rebooted = payload.uptime < old.uptime;
+
+            let delta_in = if payload.traffic_in >= old.last_raw_in {
+                payload.traffic_in - old.last_raw_in
+            } else if rebooted {
+                payload.traffic_in
+            } else {
+                0.0
+            };
             new_cum_in += delta_in;
 
-            let mut delta_out = payload.traffic_out - old.last_raw_out;
-            if delta_out < 0.0 {
-                delta_out = payload.traffic_out;
-            }
+            let delta_out = if payload.traffic_out >= old.last_raw_out {
+                payload.traffic_out - old.last_raw_out
+            } else if rebooted {
+                payload.traffic_out
+            } else {
+                0.0
+            };
             new_cum_out += delta_out;
 
             (
@@ -236,7 +269,9 @@ pub async fn upsert_server(pool: &SqlitePool, payload: &ReportPayload) -> Result
             ?, ?, ?, ?, ?
         )
         ON CONFLICT(id) DO UPDATE SET
-            name = COALESCE(excluded.name, servers.name),
+            -- 注意：這裡刻意不更新 name。name 只在第一次 INSERT 時取用 Agent
+            -- 上報的名稱；之後一律由管理後台的「修改名稱」決定，
+            -- 否則 Agent 每次上報都會把管理員剛改好的顯示名稱蓋回去。
             country = COALESCE(excluded.country, servers.country),
             city = COALESCE(excluded.city, servers.city),
             cpu = excluded.cpu,
@@ -263,8 +298,8 @@ pub async fn upsert_server(pool: &SqlitePool, payload: &ReportPayload) -> Result
     )
     .bind(&payload.id)
     .bind(&name)
-    .bind(&payload.country)
-    .bind(&payload.city)
+    .bind(&country)
+    .bind(&city)
     .bind(payload.cpu)
     .bind(payload.load[0])
     .bind(payload.load[1])
@@ -332,6 +367,7 @@ pub async fn reset_traffic(pool: &SqlitePool, id: &str) -> Result<()> {
 }
 
 pub async fn rename_server(pool: &SqlitePool, id: &str, name: &str) -> Result<()> {
+    let name = clip(name, 64);
     sqlx::query("UPDATE servers SET name = ? WHERE id = ?")
         .bind(name)
         .bind(id)

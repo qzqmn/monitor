@@ -101,21 +101,21 @@ Agent 啟動時向 `ip-api.com` 查詢公網 IP 對應國家/城市並上報。
 
 ## 5. 告警觸發條件彙總
 
-1. **離線**：超過「離線分鐘」未上報（背景每分鐘檢查）  
-2. **CPU**：單次上報時 CPU ≥ 閾值  
-3. **記憶體**：使用率 ≥ 閾值  
-4. **流量**：`(cum_in + cum_out) / traffic_limit * 100 ≥ 設定百分比`  
+1. **離線**：超過「離線分鐘」未上報（背景每分鐘檢查），離線期間只通知一次，恢復上報後補發一則恢復通知
+2. **CPU**：單次上報時 CPU ≥ 閾值
+3. **記憶體**：使用率 ≥ 閾值
+4. **流量**：`(cum_in + cum_out) / traffic_limit * 100 ≥ 設定百分比`
 
-同一條件可能在連續上報時多次觸發；若需「只告一次」可之後再加防抖。
+CPU / 記憶體 / 流量三種告警都有 30 分鐘冷卻：同一台機器同一種告警在冷卻時間內只會發一次，不會每次上報（預設 20 秒一次）都連環轟炸。
 
 ---
 
 ## 6. 安全建議
 
-- `REPORT_SECRET`、`ADMIN_SECRET` 使用長隨機字串  
-- 不要把管理後台暴露在無密碼的公網；可加反向代理 + Basic Auth 或僅 VPN/Tailscale 訪問  
-- 定期 `docker compose pull` 無（自建映像），改為定期更新程式碼後 `--build`  
-- Agent 以普通權限執行即可（讀 `/proc` 等）；無需 root 執行命令通道  
+- `REPORT_SECRET`、`ADMIN_SECRET` 使用長隨機字串，放在 `.env`（不要提交進 git）
+- 不要把管理後台暴露在無密碼的公網；管理 API 已改用 `Authorization: Bearer` 認證，但仍建議只從 Tailscale 或加反向代理 + HTTPS 存取
+- 中央端映像改由 CI 自動建置並推到 ghcr.io，更新時 `docker compose pull && docker compose up -d` 即可，不需要在主機上重新編譯
+- Agent 以普通權限執行即可（讀 `/proc` 等）；無需 root 執行命令通道
 
 ---
 
@@ -142,4 +142,3 @@ docker compose logs -f
 ```bash
 journalctl -u vps-monitor-agent -f
 ```
-EOF
