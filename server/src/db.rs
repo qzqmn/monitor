@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
@@ -30,6 +30,10 @@ pub struct ServerStatus {
     pub traffic_start: Option<String>,
     pub traffic_limit: f64,
     pub traffic_notify_percent: f64,
+    pub traffic_reset_day: i64,
+    #[serde(skip_serializing)]
+    #[allow(dead_code)] // 只在 FromRow 讀取時用到，供未來除錯/顯示用途保留
+    pub last_auto_reset_ym: Option<String>,
     pub uptime: i64,
     pub latency_telecom: Option<i32>,
     pub latency_unicom: Option<i32>,
@@ -83,6 +87,10 @@ pub struct AdminUpdateTrafficLimit {
     pub id: String,
     pub traffic_limit: f64,
     pub traffic_notify_percent: f64,
+    /// 每月流量自動歸零的日子（1-31）。0 或缺省 = 不自動歸零，
+    /// 沿用舊行為（只能按「重設月流量統計」手動歸零）。
+    #[serde(default)]
+    pub traffic_reset_day: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -169,6 +177,18 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool> {
     )
     .execute(&pool)
     .await?;
+
+    // 輕量遷移：對已經在跑、資料庫裡已有 servers 表的舊安裝，補上這兩個新欄位。
+    // SQLite 沒有 `ADD COLUMN IF NOT EXISTS`，欄位已存在時 ALTER 會回錯，
+    // 直接忽略該錯誤即可（新建的資料庫這裡也會跑一次，欄位一樣會被補上）。
+    let _ = sqlx::query(
+        "ALTER TABLE servers ADD COLUMN traffic_reset_day INTEGER NOT NULL DEFAULT 0",
+    )
+    .execute(&pool)
+    .await;
+    let _ = sqlx::query("ALTER TABLE servers ADD COLUMN last_auto_reset_ym TEXT")
+        .execute(&pool)
+        .await;
 
     sqlx::query(
         r#"
@@ -349,17 +369,23 @@ pub async fn get_all_servers(pool: &SqlitePool) -> Result<Vec<ServerStatus>> {
 }
 
 pub async fn reset_traffic(pool: &SqlitePool, id: &str) -> Result<()> {
-    let now = Utc::now().to_rfc3339();
+    let now = Utc::now();
+    // 手動按「重設流量」也順便記一筆 last_auto_reset_ym，等於「這個月已經處理過了」，
+    // 避免同一個月稍後又被自動歸零的排程再打一次（例如重置日設 15 號、
+    // 但使用者在 10 號就手動按了重設，15 號那天就不需要再自動重設一次）。
+    let ym = now.format("%Y-%m").to_string();
     sqlx::query(
         r#"
         UPDATE servers
         SET cum_in = 0,
             cum_out = 0,
-            traffic_start = ?
+            traffic_start = ?,
+            last_auto_reset_ym = ?
         WHERE id = ?
         "#,
     )
-    .bind(now)
+    .bind(now.to_rfc3339())
+    .bind(ym)
     .bind(id)
     .execute(pool)
     .await?;
@@ -381,14 +407,84 @@ pub async fn update_traffic_limit(
     id: &str,
     limit: f64,
     percent: f64,
+    reset_day: i64,
 ) -> Result<()> {
+    // 1-31 才是合法的「每月幾號」；其他值（含 0）一律當成「關閉自動歸零」存成 0，
+    // 不讓後台誤填的奇怪數字（例如 -5、99）進到自動歸零邏輯裡。
+    let reset_day = if (1..=31).contains(&reset_day) { reset_day } else { 0 };
     sqlx::query(
-        "UPDATE servers SET traffic_limit = ?, traffic_notify_percent = ? WHERE id = ?"
+        "UPDATE servers SET traffic_limit = ?, traffic_notify_percent = ?, traffic_reset_day = ? WHERE id = ?"
     )
     .bind(limit)
     .bind(percent)
+    .bind(reset_day)
     .bind(id)
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// 這個月的最後一天是幾號（處理 2 月、30 天月份等）。
+fn last_day_of_month(year: i32, month: u32) -> u32 {
+    let (ny, nm) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
+    let first_of_next = chrono::NaiveDate::from_ymd_opt(ny, nm, 1).expect("valid date");
+    first_of_next.pred_opt().expect("valid date").day()
+}
+
+/// 檢查所有設定了「每月幾號自動歸零」的機器，該歸零的就歸零。
+/// 用「今天幾號 >= 這個月的有效重置日，且這個月還沒重置過」判斷，
+/// 而不是「今天剛好等於重置日」：這樣即使伺服器在重置日當天剛好離線、
+/// 或重置日設 31 號但這個月只有 30 天，之後補跑一樣抓得到，不會整月漏掉。
+/// 回傳這次有被歸零的 (id, name)，方便上層記日誌或發通知。
+pub async fn auto_reset_due_traffic(pool: &SqlitePool) -> Result<Vec<(String, String)>> {
+    let now = Utc::now();
+    let this_ym = now.format("%Y-%m").to_string();
+    let today = now.day();
+    let last_day = last_day_of_month(now.year(), now.month());
+
+    let candidates: Vec<(String, String, i64, Option<String>)> = sqlx::query_as(
+        "SELECT id, name, traffic_reset_day, last_auto_reset_ym FROM servers WHERE traffic_reset_day > 0",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut reset_list = Vec::new();
+    for (id, name, reset_day, last_ym) in candidates {
+        if last_ym.as_deref() == Some(this_ym.as_str()) {
+            continue; // 這個月已經重置過了
+        }
+        // 重置日設 31 號、但這個月只有 30 天（或 2 月）時，改用這個月的最後一天，
+        // 不然永遠等不到「31 號」而整個月都不會自動歸零。
+        let effective_day = (reset_day as u32).min(last_day);
+        if today >= effective_day {
+            sqlx::query(
+                r#"
+                UPDATE servers
+                SET cum_in = 0, cum_out = 0, traffic_start = ?, last_auto_reset_ym = ?
+                WHERE id = ?
+                "#,
+            )
+            .bind(now.to_rfc3339())
+            .bind(&this_ym)
+            .bind(&id)
+            .execute(pool)
+            .await?;
+            reset_list.push((id, name));
+        }
+    }
+    Ok(reset_list)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::last_day_of_month;
+
+    #[test]
+    fn last_day_of_month_handles_month_boundaries() {
+        assert_eq!(last_day_of_month(2026, 2), 28); // 2026 不是閏年
+        assert_eq!(last_day_of_month(2024, 2), 29); // 2024 是閏年
+        assert_eq!(last_day_of_month(2026, 4), 30);
+        assert_eq!(last_day_of_month(2026, 1), 31);
+        assert_eq!(last_day_of_month(2026, 12), 31);
+    }
 }

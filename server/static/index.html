@@ -180,6 +180,7 @@
                             <div class="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
                                 <div class="bg-amber-500 h-1.5 progress-bar-fill" style="width: ${Math.min(100, trafficPct)}%"></div>
                             </div>
+                            ${s.traffic_reset_day ? `<div class="text-[10px] text-gray-400 mt-0.5">每月 ${s.traffic_reset_day} 號自動歸零</div>` : ''}
                         </div>
                     </div>
 

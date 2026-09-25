@@ -214,9 +214,13 @@
                                 <input type="text" class="rename-input border px-2 py-1 rounded w-full" data-id="${idAttr}" value="${esc(s.name || '')}" placeholder="新名稱">
                                 <button data-action="rename" data-id="${idAttr}" class="bg-blue-600 text-white px-3 py-1 rounded">修改名稱</button>
                             </div>
-                            <div class="flex items-center gap-2">
-                                <input type="number" class="limit-input border px-2 py-1 rounded w-full" data-id="${idAttr}" value="${esc(s.traffic_limit || 0)}" placeholder="流量限額(GB)">
-                                <button data-action="update-limit" data-id="${idAttr}" class="bg-purple-600 text-white px-3 py-1 rounded">更新限額</button>
+                            <div class="flex items-center gap-2 flex-wrap">
+                                <input type="number" class="limit-input border px-2 py-1 rounded w-24" data-id="${idAttr}" value="${esc(s.traffic_limit || 0)}" placeholder="限額(GB)" title="流量限額(GB)，0=不限">
+                                <input type="number" class="percent-input border px-2 py-1 rounded w-16" data-id="${idAttr}" value="${esc(s.traffic_notify_percent ?? 80)}" min="1" max="100" title="達百分之多少告警">
+                                <span class="text-gray-400">% ·</span>
+                                <input type="number" class="resetday-input border px-2 py-1 rounded w-16" data-id="${idAttr}" value="${esc(s.traffic_reset_day || 0)}" min="0" max="31" title="每月幾號自動歸零，0=不自動">
+                                <span class="text-gray-400">號歸零</span>
+                                <button data-action="update-limit" data-id="${idAttr}" class="bg-purple-600 text-white px-3 py-1 rounded">更新</button>
                             </div>
                         </div>
                     </div>
@@ -278,13 +282,18 @@
         }
 
         async function updateLimit(id) {
-            const input = document.querySelector(`.limit-input[data-id="${CSS.escape(id)}"]`);
-            const limit = parseFloat(input.value) || 0;
+            const sel = (cls) => document.querySelector(`.${cls}[data-id="${CSS.escape(id)}"]`);
+            const limit = parseFloat(sel('limit-input').value) || 0;
+            const percentRaw = parseFloat(sel('percent-input').value);
+            const percent = Number.isNaN(percentRaw) ? 80 : percentRaw;
+            const resetDayRaw = parseInt(sel('resetday-input').value, 10);
+            const resetDay = Number.isNaN(resetDayRaw) ? 0 : resetDayRaw;
             await apiPost('/api/admin/update-traffic-limit', {
                 id,
                 traffic_limit: limit,
-                traffic_notify_percent: 80.0
-            }, '流量上限更新成功！');
+                traffic_notify_percent: percent,
+                traffic_reset_day: resetDay
+            }, '流量設定更新成功！');
         }
 
         async function resetTraffic(id) {

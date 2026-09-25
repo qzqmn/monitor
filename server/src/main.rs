@@ -47,6 +47,16 @@ async fn main() -> anyhow::Result<()> {
             if let Ok(settings) = notify::load_settings(&pool_bg).await {
                 notify::check_offline(&pool_bg, &settings).await;
             }
+            // 每月自動歸零流量：用「今天 >= 這個月的重置日」判斷，60 秒跑一次
+            // 成本可以忽略，但能保證重置日當天離線也會在恢復後很快補跑。
+            match db::auto_reset_due_traffic(&pool_bg).await {
+                Ok(reset) => {
+                    for (id, name) in reset {
+                        tracing::info!("流量已自動歸零: {} ({})", name, id);
+                    }
+                }
+                Err(e) => tracing::error!("auto reset traffic error: {:?}", e),
+            }
         }
     });
 

@@ -160,6 +160,7 @@ pub async fn admin_update_traffic_limit(
         &payload.id,
         payload.traffic_limit,
         payload.traffic_notify_percent,
+        payload.traffic_reset_day,
     )
     .await
     {
