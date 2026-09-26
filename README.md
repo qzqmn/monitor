@@ -10,7 +10,7 @@
 - 國旗由 Agent 自動 GeoIP（ip-api.com）
 - 通知：Telegram（自填 Token + Chat ID）、Webhook（填 URL 即可）
 - 告警：離線、CPU、記憶體、流量百分比
-- 管理後台需 ADMIN_SECRET
+- 管理後台網頁登入（帳密），每台機器各自一組專屬上報密鑰
 
 ## 目錄結構
 

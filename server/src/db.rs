@@ -40,6 +40,11 @@ pub struct ServerStatus {
     pub latency_mobile: Option<i32>,
     pub packet_loss: Option<f32>,
     pub last_seen: DateTime<Utc>,
+    /// Agent 上報認證用的專屬 token。故意 skip_serializing——這個欄位只能透過
+    /// 已登入的管理端點手動取用（見 agents.rs），絕不能出現在 /api/servers
+    /// 這種公開端點的 JSON 裡。
+    #[serde(skip_serializing)]
+    pub token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -189,6 +194,9 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool> {
     let _ = sqlx::query("ALTER TABLE servers ADD COLUMN last_auto_reset_ym TEXT")
         .execute(&pool)
         .await;
+    let _ = sqlx::query("ALTER TABLE servers ADD COLUMN token TEXT")
+        .execute(&pool)
+        .await;
 
     sqlx::query(
         r#"
@@ -201,7 +209,61 @@ pub async fn init_db(database_url: &str) -> Result<SqlitePool> {
     .execute(&pool)
     .await?;
 
+    // 單一管理員帳號：用 CHECK(id = 1) 讓這張表天生只能有一列，
+    // 不需要額外程式碼防止重複註冊出第二個帳號。
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS admin_account (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            username TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
+    // 舊安裝升級：既有機器原本是靠全域 REPORT_SECRET 認證，沒有各自的 token。
+    // 這裡幫每一筆還沒有 token 的既有機器補發一組，資料（累計流量、名稱、
+    // 流量上限設定等）完全保留，管理員只需要把新 token 貼到該台機器的
+    // Agent 設定裡即可，不用刪掉重建。
+    let need_token: Vec<(String,)> =
+        sqlx::query_as("SELECT id FROM servers WHERE token IS NULL OR token = ''")
+            .fetch_all(&pool)
+            .await?;
+    for (id,) in need_token {
+        let token = gen_random_token();
+        sqlx::query("UPDATE servers SET token = ? WHERE id = ?")
+            .bind(token)
+            .bind(id)
+            .execute(&pool)
+            .await?;
+    }
+
     Ok(pool)
+}
+
+/// 產生一組 32 bytes（64 個十六進位字元）的高強度隨機 token，
+/// 用在 Agent 上報密鑰和登入 session 上。用 argon2 依賴帶進來的
+/// OS 隨機數產生器，不用再多加一個 `rand` crate。
+pub fn gen_random_token() -> String {
+    use rand_core::{OsRng, RngCore};
+    let mut bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 pub async fn upsert_server(pool: &SqlitePool, payload: &ReportPayload) -> Result<UpsertResult> {
@@ -366,6 +428,159 @@ pub async fn get_all_servers(pool: &SqlitePool) -> Result<Vec<ServerStatus>> {
     .fetch_all(pool)
     .await?;
     Ok(rows)
+}
+
+/// 建立一台新機器的登記資料：產生一組專屬 token，插入一筆「還沒有任何
+/// 上報數據」的占位資料列。回傳的 token 只有這一刻的呼叫端看得到明碼，
+/// 之後只能透過 list_agents_admin() 再查一次（存在資料庫裡，不是雜湊，
+/// 因為 Agent 之後每次上報都要能拿它來比對，這跟使用者密碼不同，
+/// 不能只存雜湊）。
+pub async fn create_agent(pool: &SqlitePool, id: &str, name: &str) -> Result<String> {
+    let token = gen_random_token();
+    let name = clip(name, 64);
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        r#"
+        INSERT INTO servers (
+            id, name, cpu, load1, load5, load15, mem_used, mem_total,
+            disk_used, disk_total, net_rx, net_tx, uptime, last_seen, token
+        ) VALUES (?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ?, ?)
+        "#,
+    )
+    .bind(id)
+    .bind(name)
+    .bind(now)
+    .bind(&token)
+    .execute(pool)
+    .await?;
+    Ok(token)
+}
+
+/// 給後台「機器管理」列表用：跟 get_all_servers 一樣的資料，但額外把
+/// token 一起帶出來（此函式只給已經過 require_admin 認證的端點呼叫）。
+pub async fn list_agents_admin(pool: &SqlitePool) -> Result<Vec<ServerStatus>> {
+    get_all_servers(pool).await
+}
+
+/// 查這個 id 目前登記的 token，report handler 拿它跟 Agent 上報帶的
+/// secret 做常數時間比對。查無此 id 回 None，report handler 據此拒絕
+/// 未登記過的機器上報——這是取代舊版「全域 REPORT_SECRET、隨便填 id
+/// 都能自動建立新機器」的核心改動。
+pub async fn get_agent_token(pool: &SqlitePool, id: &str) -> Result<Option<String>> {
+    let row: Option<(Option<String>,)> = sqlx::query_as("SELECT token FROM servers WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.and_then(|(t,)| t))
+}
+
+/// 重新產生某台機器的 token（舊 token 立刻失效），用在懷疑外洩、
+/// 或單純想換一組時，不影響其他機器。
+pub async fn rotate_agent_token(pool: &SqlitePool, id: &str) -> Result<String> {
+    let token = gen_random_token();
+    sqlx::query("UPDATE servers SET token = ? WHERE id = ?")
+        .bind(&token)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(token)
+}
+
+pub async fn delete_agent(pool: &SqlitePool, id: &str) -> Result<()> {
+    sqlx::query("DELETE FROM servers WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------
+// 管理員帳號 / 登入 session
+// ---------------------------------------------------------------------
+
+pub async fn admin_exists(pool: &SqlitePool) -> Result<bool> {
+    let row: Option<(i64,)> = sqlx::query_as("SELECT id FROM admin_account WHERE id = 1")
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.is_some())
+}
+
+pub async fn create_admin(pool: &SqlitePool, username: &str, password_hash: &str) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO admin_account (id, username, password_hash, created_at) VALUES (1, ?, ?, ?)",
+    )
+    .bind(username)
+    .bind(password_hash)
+    .bind(Utc::now().to_rfc3339())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// 回傳 (username, password_hash)
+pub async fn get_admin(pool: &SqlitePool) -> Result<Option<(String, String)>> {
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT username, password_hash FROM admin_account WHERE id = 1")
+            .fetch_optional(pool)
+            .await?;
+    Ok(row)
+}
+
+pub async fn update_admin_password(pool: &SqlitePool, password_hash: &str) -> Result<()> {
+    sqlx::query("UPDATE admin_account SET password_hash = ? WHERE id = 1")
+        .bind(password_hash)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+const SESSION_TTL_DAYS: i64 = 30;
+
+pub async fn create_session(pool: &SqlitePool) -> Result<String> {
+    let token = gen_random_token();
+    let now = Utc::now();
+    let expires = now + chrono::Duration::days(SESSION_TTL_DAYS);
+    sqlx::query("INSERT INTO sessions (token, created_at, expires_at) VALUES (?, ?, ?)")
+        .bind(&token)
+        .bind(now.to_rfc3339())
+        .bind(expires.to_rfc3339())
+        .execute(pool)
+        .await?;
+    Ok(token)
+}
+
+/// session 是否有效（存在且未過期）。過期的session 這裡順手清掉，
+/// 不用另外排一個清理排程。
+pub async fn session_valid(pool: &SqlitePool, token: &str) -> Result<bool> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT expires_at FROM sessions WHERE token = ?")
+        .bind(token)
+        .fetch_optional(pool)
+        .await?;
+    match row {
+        None => Ok(false),
+        Some((expires_at,)) => {
+            let expired = chrono::DateTime::parse_from_rfc3339(&expires_at)
+                .map(|t| t.with_timezone(&Utc) < Utc::now())
+                .unwrap_or(true);
+            if expired {
+                let _ = sqlx::query("DELETE FROM sessions WHERE token = ?")
+                    .bind(token)
+                    .execute(pool)
+                    .await;
+                Ok(false)
+            } else {
+                Ok(true)
+            }
+        }
+    }
+}
+
+pub async fn delete_session(pool: &SqlitePool, token: &str) -> Result<()> {
+    sqlx::query("DELETE FROM sessions WHERE token = ?")
+        .bind(token)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 pub async fn reset_traffic(pool: &SqlitePool, id: &str) -> Result<()> {

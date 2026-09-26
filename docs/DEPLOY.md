@@ -33,23 +33,19 @@ cd /root && unzip vps-monitor.zip && cd vps-monitor
 
 > 中央端映像由 GitHub Actions 自動建置並推到 `ghcr.io`，主機上**不需要**安裝 Rust 工具鏈，`docker compose` 只會拉現成映像。
 
-### 3. 設定密鑰（必做）
+### 3. 首次開啟，建立管理員帳號
 
-複製範例並修改：
+現在不用先在檔案裡改密鑰了。啟動後直接開瀏覽器：
 
-```bash
-cp .env.example .env
-nano .env
+```
+http://你的IP:8080/admin.html
 ```
 
-至少要改：
+第一次打開會是「建立管理員帳號」畫面，設定一組帳號密碼（密碼至少 8 個字元）即可，僅此一次——建立過後這個畫面就永久關閉，不能再重新註冊搶帳號。忘記密碼的話，只能到伺服器上用 `sqlite3 data/monitor.db "DELETE FROM admin_account;"` 清掉重來，沒有後門可以救。
 
-```bash
-REPORT_SECRET=改成很長的隨機字串   # openssl rand -hex 32
-ADMIN_SECRET=改成另一個管理密碼    # openssl rand -hex 32
-```
+想在架了 HTTPS 反向代理之後，讓登入用的 Cookie 加上 `Secure` 屬性，就把 `.env` 裡的 `COOKIE_SECURE` 改成 `true`；純 HTTP／Tailscale 內網存取請保持 `false`。
 
-`.env` 不會被提交進 git（已在 `.gitignore` 裡），密鑰只留在伺服器上。
+> 想自訂綁定位址/端口，或你的 GHCR 帳號不是 `qzqmn`，執行 `cp .env.example .env` 後改 `BIND_ADDR`/`PORT`/`GHCR_OWNER` 即可；不改也沒關係，`docker-compose.yml` 都有預設值。
 
 ### 4. 啟動
 
@@ -91,6 +87,12 @@ docker compose pull && docker compose up -d   # 更新到最新映像
 ---
 
 ## 三、Agent 部署（被監控機器）
+
+### 0. 先在後台「新增機器」登記（每台都要做這一步）
+
+打開 `http://中央端IP:8080/admin.html` 登入後，最上面「➕ 新增機器」填一個 id（例如 `oracle-tokyo`）和顯示名稱，按「產生憑證」。畫面會秀出一段完整的設定內容，包含這台專屬的 `REPORT_SECRET`——**每台機器都要各自新增、各自拿一組不一樣的密鑰**，不是像舊版那樣全部機器共用一組。這組密鑰之後還能在機器管理列表裡點「顯示/複製」再看一次，忘記存也沒關係；真的洩漏了就點「重新產生」，只有那一台需要重新設定。
+
+沒有先在這裡新增就直接啟動 Agent，中央端會直接拒絕上報（回應 403 unknown agent id）。
 
 ### 方式 A：靜態 Binary + systemd（推薦）
 
@@ -139,9 +141,9 @@ nano /etc/systemd/system/vps-monitor-agent.service
 
 ```ini
 Environment=MONITOR_URL=http://中央端IP:8080
-Environment=AGENT_ID=唯一ID例如 oracle-tokyo
+Environment=AGENT_ID=跟後台新增機器時填的 id 完全一致，例如 oracle-tokyo
 Environment=AGENT_NAME=顯示名稱例如 Oracle-日本東京
-Environment=REPORT_SECRET=與中央端相同的 REPORT_SECRET
+Environment=REPORT_SECRET=後台新增機器時顯示的專屬密鑰
 Environment=INTERVAL_SECS=20
 ```
 
@@ -158,7 +160,7 @@ journalctl -u vps-monitor-agent -f
 
 #### 4. 多台機器
 
-每台改不同的 `AGENT_ID` / `AGENT_NAME`，`REPORT_SECRET` 相同即可。
+每一台都要先在後台「新增機器」各自登記，`AGENT_ID` 對應登記時的 id、`REPORT_SECRET` 是那台自己的專屬密鑰——**每台都不一樣**，不能像舊版那樣共用一組，`AGENT_NAME` 隨意。
 
 ---
 
@@ -166,7 +168,7 @@ journalctl -u vps-monitor-agent -f
 
 ```bash
 cd vps-monitor/agent
-cp .env.example .env   # 填 MONITOR_URL / REPORT_SECRET
+cp .env.example .env   # 填 MONITOR_URL / AGENT_ID（後台登記的 id）/ REPORT_SECRET（後台顯示的專屬密鑰）
 docker compose pull
 docker compose up -d
 ```
@@ -192,10 +194,10 @@ Agent 只需出站訪問中央端，一般不用開入站端口。
 
 ## 六、驗證清單
 
-1. 中央端 `docker compose ps` 為 Up  
-2. 瀏覽器能打開主頁  
-3. Agent 日誌有 `reported`  
-4. 主頁出現對應卡片，數值在更新  
-5. 管理後台用 ADMIN_SECRET 能改名 / 重設流量 / 存通知設定  
-6. 點「發送測試」能收到 Telegram 或 Webhook  
-EOF
+1. 中央端 `docker compose ps` 為 Up
+2. 瀏覽器能打開主頁
+3. 已經在後台「新增機器」登記過要監控的每一台
+4. Agent 日誌有 `reported`
+5. 主頁出現對應卡片，數值在更新
+6. 管理後台登入後能改名 / 重設流量 / 存通知設定 / 新增與刪除機器
+7. 點「發送測試」能收到 Telegram 或 Webhook

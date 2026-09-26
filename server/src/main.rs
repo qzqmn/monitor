@@ -1,19 +1,23 @@
+mod agents;
 mod api;
+mod auth;
 mod db;
 mod notify;
 
+use agents::{create_agent, delete_agent, list_agents, rotate_agent_token};
 use api::{
     admin_get_notify, admin_rename, admin_reset_traffic, admin_save_notify, admin_test_notify,
-    admin_update_traffic_limit, list_servers, report, require_admin, AppState,
+    admin_update_traffic_limit, list_servers, report, AppState,
 };
+use auth::{change_password, login, logout, require_admin, setup, setup_status};
 use axum::{
+    extract::Request,
     http::{header, HeaderValue},
     middleware::{self, Next},
     response::Response,
     routing::{get, post},
     Router,
 };
-use axum::extract::Request;
 use std::{env, sync::Arc, time::Duration};
 use tower_http::services::ServeDir;
 use tracing_subscriber;
@@ -26,8 +30,13 @@ async fn main() -> anyhow::Result<()> {
 
     let database_url = env::var("DATABASE_URL")
         .unwrap_or_else(|_| "sqlite:data/monitor.db".to_string());
-    let report_secret = env::var("REPORT_SECRET").expect("REPORT_SECRET must be set");
-    let admin_secret = env::var("ADMIN_SECRET").expect("ADMIN_SECRET must be set");
+    // 帳密＋每台機器專屬 token 都改存在資料庫裡，首次開後台網頁自己設定，
+    // 伺服器啟動不再需要 REPORT_SECRET / ADMIN_SECRET 這兩個環境變數了。
+    // COOKIE_SECURE 預設關閉，因為預設是走 Tailscale/內網 plain HTTP，
+    // 開了瀏覽器會直接不送這顆 Cookie、永遠登不進去；架了 HTTPS 反代才開。
+    let cookie_secure = env::var("COOKIE_SECURE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
 
     std::fs::create_dir_all("data")?;
 
@@ -35,8 +44,7 @@ async fn main() -> anyhow::Result<()> {
 
     let state = Arc::new(AppState {
         pool: pool.clone(),
-        report_secret,
-        admin_secret,
+        cookie_secure,
     });
 
     let pool_bg = pool.clone();
@@ -60,15 +68,18 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // /api/admin/* 全部掛在 require_admin 中介層後面，統一用
-    // Authorization: Bearer <ADMIN_SECRET> 驗證，取代舊版「每支 handler
-    // 各自檢查一次、GET 完全不檢查」的作法。
+    // /api/admin/* 全部掛在 require_admin 中介層後面：改成看登入時發的
+    // session Cookie，不再是舊版「Authorization: Bearer <ADMIN_SECRET>」。
     let admin = Router::new()
         .route("/reset-traffic", post(admin_reset_traffic))
         .route("/rename", post(admin_rename))
         .route("/update-traffic-limit", post(admin_update_traffic_limit))
         .route("/notify", get(admin_get_notify).post(admin_save_notify))
         .route("/test-notify", post(admin_test_notify))
+        .route("/change-password", post(change_password))
+        .route("/agents", get(list_agents).post(create_agent))
+        .route("/agents/rotate", post(rotate_agent_token))
+        .route("/agents/delete", post(delete_agent))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_admin,
@@ -77,6 +88,10 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/api/report", post(report))
         .route("/api/servers", get(list_servers))
+        .route("/api/setup-status", get(setup_status))
+        .route("/api/setup", post(setup))
+        .route("/api/login", post(login))
+        .route("/api/logout", post(logout))
         .nest("/api/admin", admin)
         .nest_service("/", ServeDir::new("static"))
         .layer(middleware::from_fn(security_headers))

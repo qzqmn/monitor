@@ -21,20 +21,35 @@
         </div>
     </div>
 
-    <!-- 1. 登入頁面 (未認證時顯示) -->
-    <div id="login-view" class="max-w-md mx-auto pt-20 px-4">
+    <!-- 1a. 首次使用：建立管理員帳號 -->
+    <div id="setup-view" class="hidden max-w-md mx-auto pt-20 px-4">
         <div class="bg-white rounded-2xl p-8 shadow-sm border border-gray-200 text-center">
-            <div class="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">
-                🔒
-            </div>
-            <h2 class="text-xl font-bold text-gray-900 mb-2">管理後台身份驗證</h2>
-            <p class="text-xs text-gray-500 mb-6">請輸入管理員密碼以進入控制台</p>
-            
-            <form onsubmit="handleLogin(event)" class="space-y-4">
-                <input type="password" id="loginPassword" placeholder="輸入 ADMIN_SECRET" class="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-center focus:ring-2 focus:ring-emerald-500 focus:outline-none">
-                <button type="submit" class="w-full bg-emerald-600 text-white font-medium py-2.5 rounded-lg hover:bg-emerald-700 transition">進入後台</button>
+            <div class="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">🆕</div>
+            <h2 class="text-xl font-bold text-gray-900 mb-2">建立管理員帳號</h2>
+            <p class="text-xs text-gray-500 mb-6">第一次使用，請設定帳號密碼（僅此一次，之後無法再重新註冊）</p>
+            <form onsubmit="handleSetup(event)" class="space-y-3 text-left">
+                <input type="text" id="setupUsername" placeholder="帳號" autocomplete="username" required class="w-full border border-gray-300 rounded-lg px-4 py-2.5 focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+                <input type="password" id="setupPassword" placeholder="密碼（至少 8 個字元）" autocomplete="new-password" minlength="8" required class="w-full border border-gray-300 rounded-lg px-4 py-2.5 focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+                <input type="password" id="setupPassword2" placeholder="再輸入一次密碼" autocomplete="new-password" minlength="8" required class="w-full border border-gray-300 rounded-lg px-4 py-2.5 focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+                <button type="submit" class="w-full bg-emerald-600 text-white font-medium py-2.5 rounded-lg hover:bg-emerald-700 transition">建立帳號</button>
             </form>
-            
+            <div class="mt-6 text-center">
+                <a href="/" class="text-xs text-gray-400 hover:text-gray-600">← 返回監控首頁</a>
+            </div>
+        </div>
+    </div>
+
+    <!-- 1b. 登入頁面 -->
+    <div id="login-view" class="hidden max-w-md mx-auto pt-20 px-4">
+        <div class="bg-white rounded-2xl p-8 shadow-sm border border-gray-200 text-center">
+            <div class="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">🔒</div>
+            <h2 class="text-xl font-bold text-gray-900 mb-2">管理後台登入</h2>
+            <p class="text-xs text-gray-500 mb-6">請輸入帳號密碼以進入控制台</p>
+            <form onsubmit="handleLogin(event)" class="space-y-3">
+                <input type="text" id="loginUsername" placeholder="帳號" autocomplete="username" class="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-center focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+                <input type="password" id="loginPassword" placeholder="密碼" autocomplete="current-password" class="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-center focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+                <button type="submit" class="w-full bg-emerald-600 text-white font-medium py-2.5 rounded-lg hover:bg-emerald-700 transition">登入</button>
+            </form>
             <div class="mt-6 text-center">
                 <a href="/" class="text-xs text-gray-400 hover:text-gray-600">← 返回監控首頁</a>
             </div>
@@ -46,8 +61,26 @@
         <div class="flex justify-between items-center mb-6">
             <h1 class="text-2xl font-bold text-gray-900">⚙️ 監控系統管理後台</h1>
             <div class="flex gap-2">
+                <button onclick="showChangePassword()" class="text-sm bg-gray-100 text-gray-600 px-3 py-1.5 rounded-lg hover:bg-gray-200 transition">修改密碼</button>
                 <button onclick="handleLogout()" class="text-sm bg-red-50 text-red-600 px-3 py-1.5 rounded-lg hover:bg-red-100 transition">登出</button>
                 <a href="/" class="text-sm bg-gray-200 hover:bg-gray-300 text-gray-700 px-3 py-1.5 rounded-lg transition">← 返回首頁</a>
+            </div>
+        </div>
+
+        <!-- 新增機器 -->
+        <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-200 mb-6">
+            <h2 class="text-lg font-bold text-gray-800 mb-1">➕ 新增機器</h2>
+            <p class="text-xs text-gray-500 mb-4">先在這裡登記一台新機器，取得專屬的上報密鑰，再貼到該台機器的 Agent 設定裡——沒有先登記過的 id，Agent 上報會被拒絕。</p>
+            <form onsubmit="handleCreateAgent(event)" class="flex flex-wrap gap-2 items-center">
+                <input type="text" id="newAgentId" placeholder="機器 id，例如 oracle-tokyo" class="flex-1 min-w-[180px] border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                <input type="text" id="newAgentName" placeholder="顯示名稱，例如 Oracle-東京（可留空）" class="flex-1 min-w-[180px] border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                <button type="submit" class="bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-emerald-700 transition">產生憑證</button>
+            </form>
+            <div id="new-agent-result" class="hidden mt-4 bg-gray-50 border border-gray-200 rounded-xl p-4 text-xs">
+                <p class="font-semibold text-gray-700 mb-2">把下面這段貼到該台機器的 Agent <code>.env</code>（或 docker-compose 環境變數）裡：</p>
+                <pre id="new-agent-snippet" class="bg-gray-900 text-emerald-300 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap break-all"></pre>
+                <button type="button" onclick="copySnippet()" class="mt-2 bg-gray-700 text-white px-3 py-1 rounded text-xs hover:bg-gray-800">複製</button>
+                <p class="text-amber-600 mt-2">⚠️ 這組密鑰只會顯示這一次的完整內容；下面列表裡的 token 一樣看得到，別擔心弄丟。</p>
             </div>
         </div>
 
@@ -109,21 +142,26 @@
         </div>
     </div>
 
-    <script>
-        // 密碼一律從 Authorization: Bearer 帶出去，不再放進 URL query 或 JSON body
-        // （query string 會被反向代理、瀏覽器歷史記錄下來；body 裡混著業務欄位也容易
-        // 不小心整包被記錄或轉發）。sessionStorage 只是「這個分頁記得你已經登入」，
-        // 真正的驗證由伺服器的 require_admin 中介層做。
-        let adminSecret = sessionStorage.getItem('ADMIN_SECRET') || '';
+    <!-- 修改密碼 Modal -->
+    <div id="change-password-modal" class="hidden fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl p-6 max-w-sm w-full shadow-xl">
+            <h3 class="text-lg font-bold text-gray-800 mb-4">修改密碼</h3>
+            <form onsubmit="handleChangePassword(event)" class="space-y-3">
+                <input type="password" id="cpCurrent" placeholder="目前密碼" autocomplete="current-password" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                <input type="password" id="cpNew" placeholder="新密碼（至少 8 個字元）" autocomplete="new-password" minlength="8" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm">
+                <div class="flex gap-2 pt-2">
+                    <button type="submit" class="flex-1 bg-emerald-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-emerald-700">確認修改</button>
+                    <button type="button" onclick="closeChangePassword()" class="flex-1 bg-gray-100 text-gray-600 py-2 rounded-lg text-sm hover:bg-gray-200">取消</button>
+                </div>
+            </form>
+        </div>
+    </div>
 
+    <script>
         function esc(s) {
             return String(s ?? '').replace(/[&<>"']/g, c => ({
                 '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
             }[c]));
-        }
-
-        function authHeaders(extra = {}) {
-            return { 'Authorization': `Bearer ${adminSecret}`, ...extra };
         }
 
         function showModal(msg, title = "系統提示", icon = "ℹ️") {
@@ -132,55 +170,140 @@
             document.getElementById('modal-icon').innerText = icon;
             document.getElementById('custom-modal').classList.remove('hidden');
         }
-
         function closeModal() {
             document.getElementById('custom-modal').classList.add('hidden');
         }
 
-        window.onload = function() {
-            if (adminSecret) {
-                // 分頁記得密碼不代表密碼還有效（例如已經換過 ADMIN_SECRET），
-                // 一律先打一個受保護的端點驗證，401 就退回登入頁。
-                loadNotifyConfig().then(ok => {
-                    if (ok) showDashboard(); else handleLogout();
-                });
+        function showView(id) {
+            for (const v of ['setup-view', 'login-view', 'admin-dashboard']) {
+                document.getElementById(v).classList.toggle('hidden', v !== id);
             }
+        }
+
+        window.onload = async function() {
+            // 帳密登入現在靠瀏覽器自動帶的 Cookie，不用自己存密碼、自己組
+            // Authorization header——這裡只需要問伺服器兩件事：有沒有帳號、
+            // 現在這個瀏覽器是不是已經登入。
+            try {
+                const s = await fetch('/api/setup-status');
+                const { needs_setup } = await s.json();
+                if (needs_setup) {
+                    showView('setup-view');
+                    return;
+                }
+            } catch (e) {
+                // 拿不到狀態就當作已經設定過，走登入頁
+            }
+
+            const loggedIn = await tryLoadDashboard();
+            if (!loggedIn) showView('login-view');
         };
+
+        async function tryLoadDashboard() {
+            const res = await fetch('/api/admin/agents');
+            if (!res.ok) return false;
+            showView('admin-dashboard');
+            renderAgentList(await res.json());
+            loadNotifyConfig();
+            return true;
+        }
+
+        async function handleSetup(e) {
+            e.preventDefault();
+            const username = document.getElementById('setupUsername').value.trim();
+            const password = document.getElementById('setupPassword').value;
+            const password2 = document.getElementById('setupPassword2').value;
+            if (password !== password2) return showModal('兩次輸入的密碼不一樣', '請確認', '⚠️');
+            if (password.length < 8) return showModal('密碼至少要 8 個字元', '請確認', '⚠️');
+
+            const res = await fetch('/api/setup', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            if (res.ok) {
+                await tryLoadDashboard();
+            } else {
+                showModal(await res.text(), '建立失敗', '❌');
+            }
+        }
 
         async function handleLogin(e) {
             e.preventDefault();
-            const input = document.getElementById('loginPassword').value.trim();
-            if (!input) return showModal('請輸入密碼！', '驗證提醒', '⚠️');
-
-            adminSecret = input;
-
-            const ok = await loadNotifyConfig();
-            if (ok) {
-                sessionStorage.setItem('ADMIN_SECRET', adminSecret);
-                showDashboard();
+            const username = document.getElementById('loginUsername').value.trim();
+            const password = document.getElementById('loginPassword').value;
+            const res = await fetch('/api/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            if (res.ok) {
+                await tryLoadDashboard();
             } else {
-                adminSecret = '';
-                showModal('登入失敗：管理員密碼錯誤！', '驗證失敗', '❌');
+                showModal(await res.text(), '登入失敗', '❌');
             }
         }
 
-        function handleLogout() {
-            sessionStorage.removeItem('ADMIN_SECRET');
-            adminSecret = '';
-            document.getElementById('login-view').classList.remove('hidden');
-            document.getElementById('admin-dashboard').classList.add('hidden');
+        async function handleLogout() {
+            await fetch('/api/logout', { method: 'POST' });
+            showView('login-view');
         }
 
-        function showDashboard() {
-            document.getElementById('login-view').classList.add('hidden');
-            document.getElementById('admin-dashboard').classList.remove('hidden');
-            loadAdminServers();
-            loadNotifyConfig();
+        function showChangePassword() {
+            document.getElementById('change-password-modal').classList.remove('hidden');
+        }
+        function closeChangePassword() {
+            document.getElementById('change-password-modal').classList.add('hidden');
+            document.getElementById('cpCurrent').value = '';
+            document.getElementById('cpNew').value = '';
+        }
+        async function handleChangePassword(e) {
+            e.preventDefault();
+            const current_password = document.getElementById('cpCurrent').value;
+            const new_password = document.getElementById('cpNew').value;
+            const res = await fetch('/api/admin/change-password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ current_password, new_password })
+            });
+            if (res.ok) {
+                closeChangePassword();
+                showModal('密碼已更新，下次登入請用新密碼。', '成功', '✅');
+            } else {
+                showModal(await res.text(), '修改失敗', '❌');
+            }
         }
 
-        // 機器列表用事件委派處理按鈕點擊，不再把 id / name 直接內插進
-        // onclick="...('${s.id}')" 字串裡——那種寫法只要 id 或 name 含有引號
-        // 就能跳出屬性、注入任意 JS。
+        // ---- 新增機器 ----
+        let lastSnippet = '';
+        async function handleCreateAgent(e) {
+            e.preventDefault();
+            const id = document.getElementById('newAgentId').value.trim();
+            const name = document.getElementById('newAgentName').value.trim();
+            const res = await apiPostRaw('/api/admin/agents', { id, name });
+            if (!res) return;
+            if (res.ok) {
+                const data = await res.json();
+                const monitorUrl = window.location.origin;
+                lastSnippet =
+`MONITOR_URL=${monitorUrl}
+AGENT_ID=${data.id}
+AGENT_NAME=${data.name}
+REPORT_SECRET=${data.token}`;
+                document.getElementById('new-agent-snippet').textContent = lastSnippet;
+                document.getElementById('new-agent-result').classList.remove('hidden');
+                document.getElementById('newAgentId').value = '';
+                document.getElementById('newAgentName').value = '';
+                loadAdminServers();
+            } else {
+                showModal(await res.text(), '新增失敗', '❌');
+            }
+        }
+        function copySnippet() {
+            navigator.clipboard.writeText(lastSnippet).then(() => showModal('已複製到剪貼簿', '完成', '📋'));
+        }
+
+        // ---- 機器管理列表 ----
         document.getElementById('admin-server-list').addEventListener('click', (e) => {
             const btn = e.target.closest('button[data-action]');
             if (!btn) return;
@@ -188,69 +311,136 @@
             if (btn.dataset.action === 'rename') updateName(id);
             if (btn.dataset.action === 'reset-traffic') resetTraffic(id);
             if (btn.dataset.action === 'update-limit') updateLimit(id);
+            if (btn.dataset.action === 'rotate-token') rotateToken(id);
+            if (btn.dataset.action === 'delete-agent') deleteAgent(id);
+            if (btn.dataset.action === 'toggle-token') toggleToken(id);
         });
 
         async function loadAdminServers() {
             try {
-                const res = await fetch('/api/servers');
-                const servers = await res.json();
-                const listEl = document.getElementById('admin-server-list');
-
-                if (!servers || servers.length === 0) {
-                    listEl.innerHTML = '<p class="text-gray-400 text-sm">目前無已註冊的機器。</p>';
-                    return;
-                }
-
-                listEl.innerHTML = servers.map(s => {
-                    const idAttr = esc(s.id);
-                    return `
-                    <div class="p-4 border border-gray-100 bg-gray-50 rounded-xl space-y-3">
-                        <div class="flex justify-between items-center">
-                            <span class="font-bold text-gray-800">${esc(s.name || s.id)} <span class="text-xs text-gray-400 font-mono">(${idAttr})</span></span>
-                            <button data-action="reset-traffic" data-id="${idAttr}" class="text-xs bg-red-50 text-red-600 px-2.5 py-1 rounded hover:bg-red-100">重設月流量統計</button>
-                        </div>
-                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                            <div class="flex items-center gap-2">
-                                <input type="text" class="rename-input border px-2 py-1 rounded w-full" data-id="${idAttr}" value="${esc(s.name || '')}" placeholder="新名稱">
-                                <button data-action="rename" data-id="${idAttr}" class="bg-blue-600 text-white px-3 py-1 rounded">修改名稱</button>
-                            </div>
-                            <div class="flex items-center gap-2 flex-wrap">
-                                <input type="number" class="limit-input border px-2 py-1 rounded w-24" data-id="${idAttr}" value="${esc(s.traffic_limit || 0)}" placeholder="限額(GB)" title="流量限額(GB)，0=不限">
-                                <input type="number" class="percent-input border px-2 py-1 rounded w-16" data-id="${idAttr}" value="${esc(s.traffic_notify_percent ?? 80)}" min="1" max="100" title="達百分之多少告警">
-                                <span class="text-gray-400">% ·</span>
-                                <input type="number" class="resetday-input border px-2 py-1 rounded w-16" data-id="${idAttr}" value="${esc(s.traffic_reset_day || 0)}" min="0" max="31" title="每月幾號自動歸零，0=不自動">
-                                <span class="text-gray-400">號歸零</span>
-                                <button data-action="update-limit" data-id="${idAttr}" class="bg-purple-600 text-white px-3 py-1 rounded">更新</button>
-                            </div>
-                        </div>
-                    </div>
-                `;
-                }).join('');
+                const res = await fetch('/api/admin/agents');
+                if (res.status === 401) { showView('login-view'); return; }
+                renderAgentList(await res.json());
             } catch (err) {
                 console.error(err);
             }
         }
 
-        async function loadNotifyConfig() {
-            try {
-                const res = await fetch('/api/admin/notify', { headers: authHeaders() });
-                if (!res.ok) return false;
-                const cfg = await res.json();
-
-                document.getElementById('enableTg').checked = cfg.telegram_enabled ?? false;
-                document.getElementById('enableWebhook').checked = cfg.webhook_enabled ?? false;
-                document.getElementById('tgToken').value = cfg.telegram_bot_token || '';
-                document.getElementById('tgChatId').value = cfg.telegram_chat_id || '';
-                document.getElementById('webhookUrl').value = cfg.webhook_url || '';
-                document.getElementById('offlineMin').value = cfg.offline_minutes ?? 5;
-                // 用 ?? 而不是 ||：閾值 0 在後端代表「關閉此項告警」，
-                // `0 || 90` 會把它誤判成「沒填」而強制變回 90，導致無法真正關閉告警。
-                document.getElementById('cpuThreshold').value = cfg.cpu_threshold ?? 90;
-                document.getElementById('memThreshold').value = cfg.mem_threshold ?? 90;
-                return true;
-            } catch (e) {
-                return false;
+        function renderAgentList(servers) {
+            const listEl = document.getElementById('admin-server-list');
+            if (!servers || servers.length === 0) {
+                listEl.innerHTML = '<p class="text-gray-400 text-sm">目前無已登記的機器，請先在上面「新增機器」。</p>';
+                return;
             }
+            listEl.innerHTML = servers.map(s => {
+                const idAttr = esc(s.id);
+                const dot = s.online ? 'bg-emerald-500' : 'bg-gray-300';
+                const maskedToken = s.token ? s.token.slice(0, 8) + '••••••••••••••••••••••••••••••••••••••••••••••••••••' : '';
+                return `
+                    <div class="p-4 border border-gray-100 bg-gray-50 rounded-xl space-y-3">
+                        <div class="flex justify-between items-center">
+                            <span class="font-bold text-gray-800 flex items-center gap-2">
+                                <span class="w-2 h-2 rounded-full ${dot} inline-block"></span>
+                                ${esc(s.name || s.id)} <span class="text-xs text-gray-400 font-mono">(${idAttr})</span>
+                            </span>
+                            <div class="flex gap-2">
+                                <button data-action="reset-traffic" data-id="${idAttr}" class="text-xs bg-red-50 text-red-600 px-2.5 py-1 rounded hover:bg-red-100">重設月流量</button>
+                                <button data-action="delete-agent" data-id="${idAttr}" class="text-xs bg-red-100 text-red-700 px-2.5 py-1 rounded hover:bg-red-200">刪除機器</button>
+                            </div>
+                        </div>
+
+                        <div class="flex items-center gap-2">
+                            <input type="text" class="rename-input border px-2 py-1 rounded w-full text-sm" data-id="${idAttr}" value="${esc(s.name || '')}" placeholder="新名稱">
+                            <button data-action="rename" data-id="${idAttr}" class="bg-blue-600 text-white px-3 py-1 rounded text-sm whitespace-nowrap">修改名稱</button>
+                        </div>
+
+                        <div class="flex items-center gap-2 flex-wrap text-sm">
+                            <input type="number" class="limit-input border px-2 py-1 rounded w-24" data-id="${idAttr}" value="${esc(s.traffic_limit || 0)}" placeholder="限額(GB)" title="流量限額(GB)，0=不限">
+                            <input type="number" class="percent-input border px-2 py-1 rounded w-16" data-id="${idAttr}" value="${esc(s.traffic_notify_percent ?? 80)}" min="1" max="100" title="達百分之多少告警">
+                            <span class="text-gray-400">% ·</span>
+                            <input type="number" class="resetday-input border px-2 py-1 rounded w-16" data-id="${idAttr}" value="${esc(s.traffic_reset_day || 0)}" min="0" max="31" title="每月幾號自動歸零，0=不自動">
+                            <span class="text-gray-400">號歸零</span>
+                            <button data-action="update-limit" data-id="${idAttr}" class="bg-purple-600 text-white px-3 py-1 rounded">更新</button>
+                        </div>
+
+                        <div class="flex items-center gap-2 text-xs">
+                            <span class="text-gray-400">上報密鑰:</span>
+                            <code class="token-display bg-gray-100 px-2 py-1 rounded flex-1 truncate" data-id="${idAttr}" data-full="${esc(s.token)}" data-masked="${esc(maskedToken)}">${esc(maskedToken)}</code>
+                            <button data-action="toggle-token" data-id="${idAttr}" class="text-blue-600 hover:underline whitespace-nowrap">顯示/複製</button>
+                            <button data-action="rotate-token" data-id="${idAttr}" class="text-amber-600 hover:underline whitespace-nowrap">重新產生</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function toggleToken(id) {
+            const el = document.querySelector(`.token-display[data-id="${CSS.escape(id)}"]`);
+            if (!el) return;
+            if (el.textContent === el.dataset.masked) {
+                el.textContent = el.dataset.full;
+                navigator.clipboard.writeText(el.dataset.full).then(() => showModal('完整密鑰已顯示並複製到剪貼簿', '完成', '📋'));
+            } else {
+                el.textContent = el.dataset.masked;
+            }
+        }
+
+        async function rotateToken(id) {
+            const res = await apiPostRaw('/api/admin/agents/rotate', { id });
+            if (!res) return;
+            if (res.ok) {
+                const data = await res.json();
+                showModal(`新密鑰：${data.token}\n\n記得更新這台機器 Agent 的 REPORT_SECRET，舊密鑰已經立刻失效。`, '已重新產生', '🔑');
+                loadAdminServers();
+            } else {
+                showModal(await res.text(), '失敗', '❌');
+            }
+        }
+
+        async function deleteAgent(id) {
+            const res = await apiPostRaw('/api/admin/agents/delete', { id });
+            if (!res) return;
+            if (res.ok) {
+                loadAdminServers();
+            } else {
+                showModal(await res.text(), '刪除失敗', '❌');
+            }
+        }
+
+        async function updateName(id) {
+            const input = document.querySelector(`.rename-input[data-id="${CSS.escape(id)}"]`);
+            await apiPost('/api/admin/rename', { id, name: input.value }, '名稱更新成功！');
+        }
+
+        async function updateLimit(id) {
+            const sel = (cls) => document.querySelector(`.${cls}[data-id="${CSS.escape(id)}"]`);
+            const limit = parseFloat(sel('limit-input').value) || 0;
+            const percentRaw = parseFloat(sel('percent-input').value);
+            const percent = Number.isNaN(percentRaw) ? 80 : percentRaw;
+            const resetDayRaw = parseInt(sel('resetday-input').value, 10);
+            const resetDay = Number.isNaN(resetDayRaw) ? 0 : resetDayRaw;
+            await apiPost('/api/admin/update-traffic-limit', {
+                id, traffic_limit: limit, traffic_notify_percent: percent, traffic_reset_day: resetDay
+            }, '流量設定更新成功！');
+        }
+
+        async function resetTraffic(id) {
+            await apiPost('/api/admin/reset-traffic', { id }, '流量已成功重設！');
+        }
+
+        // ---- 通知設定 ----
+        async function loadNotifyConfig() {
+            const res = await fetch('/api/admin/notify');
+            if (!res.ok) return;
+            const cfg = await res.json();
+            document.getElementById('enableTg').checked = cfg.telegram_enabled ?? false;
+            document.getElementById('enableWebhook').checked = cfg.webhook_enabled ?? false;
+            document.getElementById('tgToken').value = cfg.telegram_bot_token || '';
+            document.getElementById('tgChatId').value = cfg.telegram_chat_id || '';
+            document.getElementById('webhookUrl').value = cfg.webhook_url || '';
+            document.getElementById('offlineMin').value = cfg.offline_minutes ?? 5;
+            document.getElementById('cpuThreshold').value = cfg.cpu_threshold ?? 90;
+            document.getElementById('memThreshold').value = cfg.mem_threshold ?? 90;
         }
 
         async function saveNotifyConfig(e) {
@@ -268,7 +458,6 @@
                 cpu_threshold: Number.isNaN(cpu) ? 90 : cpu,
                 mem_threshold: Number.isNaN(mem) ? 90 : mem,
             };
-
             await apiPost('/api/admin/notify', payload, '通知設定已成功儲存！');
         }
 
@@ -276,50 +465,33 @@
             await apiPost('/api/admin/test-notify', {}, '測試通知已發送！請檢查 Telegram 或 Webhook。');
         }
 
-        async function updateName(id) {
-            const input = document.querySelector(`.rename-input[data-id="${CSS.escape(id)}"]`);
-            await apiPost('/api/admin/rename', { id, name: input.value }, '名稱更新成功！');
-        }
-
-        async function updateLimit(id) {
-            const sel = (cls) => document.querySelector(`.${cls}[data-id="${CSS.escape(id)}"]`);
-            const limit = parseFloat(sel('limit-input').value) || 0;
-            const percentRaw = parseFloat(sel('percent-input').value);
-            const percent = Number.isNaN(percentRaw) ? 80 : percentRaw;
-            const resetDayRaw = parseInt(sel('resetday-input').value, 10);
-            const resetDay = Number.isNaN(resetDayRaw) ? 0 : resetDayRaw;
-            await apiPost('/api/admin/update-traffic-limit', {
-                id,
-                traffic_limit: limit,
-                traffic_notify_percent: percent,
-                traffic_reset_day: resetDay
-            }, '流量設定更新成功！');
-        }
-
-        async function resetTraffic(id) {
-            await apiPost('/api/admin/reset-traffic', { id }, '流量已成功重設！');
+        // ---- 共用：帶 Cookie 的 POST（瀏覽器同源請求預設就會帶，不用手動加 header）----
+        async function apiPostRaw(url, payload) {
+            try {
+                return await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+            } catch (e) {
+                showModal('請求失敗：' + e.message, '網路錯誤', '❌');
+                return null;
+            }
         }
 
         async function apiPost(url, payload, successMsg) {
-            try {
-                const res = await fetch(url, {
-                    method: 'POST',
-                    headers: authHeaders({ 'Content-Type': 'application/json' }),
-                    body: JSON.stringify(payload)
-                });
-                if (res.status === 401) {
-                    showModal('登入已失效，請重新登入。', '需要重新驗證', '🔒');
-                    handleLogout();
-                    return;
-                }
-                if (res.ok) {
-                    showModal(successMsg, '操作成功', '✅');
-                    loadAdminServers();
-                } else {
-                    showModal('操作失敗：' + await res.text(), '操作失敗', '❌');
-                }
-            } catch (e) {
-                showModal('請求失敗：' + e.message, '網路錯誤', '❌');
+            const res = await apiPostRaw(url, payload);
+            if (!res) return;
+            if (res.status === 401) {
+                showModal('登入已失效，請重新登入。', '需要重新驗證', '🔒');
+                showView('login-view');
+                return;
+            }
+            if (res.ok) {
+                showModal(successMsg, '操作成功', '✅');
+                loadAdminServers();
+            } else {
+                showModal('操作失敗：' + await res.text(), '操作失敗', '❌');
             }
         }
     </script>

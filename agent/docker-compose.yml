@@ -1,5 +1,6 @@
 # 在「每台被監控的機器」上使用此檔案
-# 用法：cp .env.example .env，改好 MONITOR_URL / REPORT_SECRET 後
+# 用法：先在中央端後台 admin.html「新增機器」拿到專屬密鑰，
+#       cp .env.example .env，填好 MONITOR_URL / AGENT_ID / REPORT_SECRET 後
 #       docker compose pull && docker compose up -d
 
 services:
@@ -19,12 +20,14 @@ services:
     environment:
       # 必填：中央端地址（不要末尾斜線也可）
       - MONITOR_URL=${MONITOR_URL:?請先執行 cp .env.example .env 並填 MONITOR_URL}
-      # 必填：與中央端 docker-compose 的 REPORT_SECRET 相同
-      - REPORT_SECRET=${REPORT_SECRET:?請先執行 cp .env.example .env 並填 REPORT_SECRET}
+      # 必填：要跟中央端後台「新增機器」時登記的 id 完全一致，沒登記過的
+      # id 會被中央端拒絕上報
+      - AGENT_ID=${AGENT_ID:?請先在後台新增機器，再把這裡填成該機器的 id}
+      # 必填：新增機器時後台顯示的專屬密鑰（不是自訂字串，也不是全機共用）
+      - REPORT_SECRET=${REPORT_SECRET:?請填入後台新增機器時顯示的密鑰}
       # 可選：上報間隔秒數（預設 20）
       - INTERVAL_SECS=${INTERVAL_SECS:-20}
-      # 可選：不填則自動用本機 hostname 作為 AGENT_ID / 顯示名
-      - AGENT_ID=${AGENT_ID:-}
+      # 可選：顯示名稱，不填則沿用後台新增機器時填的名稱
       - AGENT_NAME=${AGENT_NAME:-}
       # 可選：手動指定要統計流量的網卡（逗號分隔，例如 eth0,ens18）。
       # 不填則自動排除 lo/docker/veth/tailscale/wg 等虛擬網卡。

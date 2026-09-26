@@ -1,13 +1,13 @@
 use axum::{
-    extract::{Request, State},
-    http::{header, StatusCode},
-    middleware::Next,
-    response::{IntoResponse, Response},
+    extract::State,
+    http::StatusCode,
+    response::IntoResponse,
     Json,
 };
 use crate::db::{
-    get_all_servers, rename_server, reset_traffic, update_traffic_limit, upsert_server, valid_id,
-    AdminNotifySettings, AdminRename, AdminResetTraffic, AdminUpdateTrafficLimit, ReportPayload,
+    get_all_servers, get_agent_token, rename_server, reset_traffic, update_traffic_limit,
+    upsert_server, valid_id, AdminNotifySettings, AdminRename, AdminResetTraffic,
+    AdminUpdateTrafficLimit, ReportPayload,
 };
 use crate::notify::{self, NotifySettings};
 use serde::Serialize;
@@ -18,46 +18,45 @@ use subtle::ConstantTimeEq;
 #[derive(Clone)]
 pub struct AppState {
     pub pool: SqlitePool,
-    pub report_secret: String,
-    pub admin_secret: String,
-}
-
-/// `/api/admin/*` 共用的認證中介層。密碼一律從
-/// `Authorization: Bearer <ADMIN_SECRET>` header 讀取（不再放在 body/query 裡，
-/// 避免明碼進 access log），並用常數時間比較，防止用回應時間差猜密碼。
-pub async fn require_admin(
-    State(state): State<Arc<AppState>>,
-    req: Request,
-    next: Next,
-) -> Result<Response, StatusCode> {
-    let ok = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .map(|token| bool::from(token.as_bytes().ct_eq(state.admin_secret.as_bytes())))
-        .unwrap_or(false);
-
-    if ok {
-        Ok(next.run(req).await)
-    } else {
-        Err(StatusCode::UNAUTHORIZED)
-    }
+    /// 登入 session 的 Cookie 要不要加 `Secure`（只能在 HTTPS 底下送出）。
+    /// 這台預設是 Tailscale/內網 plain HTTP 存取，設 true 會導致 Cookie
+    /// 整個送不出去、永遠登不進去，所以預設 false，架了 HTTPS 反代才開。
+    pub cookie_secure: bool,
 }
 
 pub async fn report(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<ReportPayload>,
 ) -> impl IntoResponse {
-    if payload.secret != state.report_secret {
-        return (StatusCode::UNAUTHORIZED, "invalid secret").into_response();
-    }
     if !valid_id(&payload.id) {
         return (
             StatusCode::BAD_REQUEST,
             "invalid id: only letters, digits, '.', '_', '-' allowed, max 64 chars",
         )
             .into_response();
+    }
+
+    // 認證改成「這個 id 有沒有在後台登記過、token 對不對得上」，取代舊版
+    // 「只要密碼跟全域 REPORT_SECRET 一樣，隨便填什麼 id 都能自動建立
+    // 新機器」。查無此 id 代表還沒在後台按「新增機器」，直接拒絕。
+    match get_agent_token(&state.pool, &payload.id).await {
+        Ok(Some(token)) => {
+            let ok = bool::from(payload.secret.as_bytes().ct_eq(token.as_bytes()));
+            if !ok {
+                return (StatusCode::UNAUTHORIZED, "invalid secret").into_response();
+            }
+        }
+        Ok(None) => {
+            return (
+                StatusCode::FORBIDDEN,
+                "unknown agent id：請先在後台「新增機器」登記這個 id",
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::error!("get_agent_token error: {:?}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "db error").into_response();
+        }
     }
 
     match upsert_server(&state.pool, &payload).await {

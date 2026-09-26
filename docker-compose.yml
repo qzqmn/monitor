@@ -18,5 +18,7 @@ services:
     environment:
       - RUST_LOG=info
       - DATABASE_URL=sqlite:/app/data/monitor.db?mode=rwc
-      - REPORT_SECRET=${REPORT_SECRET:?請先執行 cp .env.example .env 並修改 REPORT_SECRET}
-      - ADMIN_SECRET=${ADMIN_SECRET:?請先執行 cp .env.example .env 並修改 ADMIN_SECRET}
+      # 帳密（管理員登入）跟每台機器的上報密鑰現在都存在資料庫裡、透過網頁
+      # 設定，不再需要 REPORT_SECRET / ADMIN_SECRET 這兩個環境變數了。
+      # 只有真的架了 HTTPS 反向代理，才需要打開這個讓登入 Cookie 加上 Secure：
+      - COOKIE_SECURE=${COOKIE_SECURE:-false}
