@@ -7,7 +7,8 @@ mod notify;
 use agents::{create_agent, delete_agent, list_agents, rotate_agent_token};
 use api::{
     admin_get_notify, admin_rename, admin_reset_traffic, admin_save_notify, admin_test_notify,
-    admin_update_traffic_limit, list_servers, report, AppState,
+    admin_update_traffic_limit, get_server_history, healthz, list_servers, report, version_info,
+    AppState,
 };
 use auth::{change_password, login, logout, require_admin, setup, setup_status};
 use axum::{
@@ -20,7 +21,6 @@ use axum::{
 };
 use std::{env, sync::Arc, time::Duration};
 use tower_http::services::ServeDir;
-use tracing_subscriber;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -37,6 +37,9 @@ async fn main() -> anyhow::Result<()> {
     let cookie_secure = env::var("COOKIE_SECURE")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
+    // Dockerfile 用 --build-arg APP_VERSION 把 CI 那次建置的 git sha 焼進映像；
+    // 本機直接 `cargo run`（不是走 Docker）沒有這個環境變數，預設 "dev"。
+    let app_version = env::var("APP_VERSION").unwrap_or_else(|_| "dev".to_string());
 
     std::fs::create_dir_all("data")?;
 
@@ -45,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(AppState {
         pool: pool.clone(),
         cookie_secure,
+        app_version,
     });
 
     let pool_bg = pool.clone();
@@ -64,6 +68,13 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 Err(e) => tracing::error!("auto reset traffic error: {:?}", e),
+            }
+            // 歷史趨勢：每分鐘存一筆快照、順便清掉超過 7 天的舊資料。
+            if let Err(e) = db::record_history_snapshot(&pool_bg).await {
+                tracing::error!("record history snapshot error: {:?}", e);
+            }
+            if let Err(e) = db::prune_history(&pool_bg).await {
+                tracing::error!("prune history error: {:?}", e);
             }
         }
     });
@@ -86,8 +97,11 @@ async fn main() -> anyhow::Result<()> {
         ));
 
     let app = Router::new()
+        .route("/healthz", get(healthz))
+        .route("/api/version", get(version_info))
         .route("/api/report", post(report))
         .route("/api/servers", get(list_servers))
+        .route("/api/servers/:id/history", get(get_server_history))
         .route("/api/setup-status", get(setup_status))
         .route("/api/setup", post(setup))
         .route("/api/login", post(login))

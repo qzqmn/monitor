@@ -41,6 +41,25 @@
         </div>
     </main>
 
+    <!-- 點卡片彈出的歷史趨勢視窗 -->
+    <div id="detail-modal" class="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 hidden items-center justify-center p-4" onclick="if (event.target === this) closeDetail()">
+        <div class="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[85vh] overflow-y-auto p-5">
+            <div class="flex items-center justify-between mb-4 sticky top-0 bg-white">
+                <h2 id="detail-title" class="text-lg font-bold text-gray-800"></h2>
+                <div class="flex items-center gap-2">
+                    <div class="flex bg-gray-100 rounded-lg p-0.5 text-xs">
+                        <button id="range-24h" onclick="setRange('24h')" class="px-2.5 py-1 rounded-md font-medium">24 小時</button>
+                        <button id="range-7d" onclick="setRange('7d')" class="px-2.5 py-1 rounded-md font-medium">7 天</button>
+                    </div>
+                    <button onclick="closeDetail()" class="text-gray-400 hover:text-gray-600 w-7 h-7 flex items-center justify-center">
+                        <i class="fa-solid fa-xmark text-lg"></i>
+                    </button>
+                </div>
+            </div>
+            <div id="detail-charts" class="space-y-4"></div>
+        </div>
+    </div>
+
     <script>
         // 伺服器回傳的 name / country / city 全部來自 Agent 上報，理論上任何一台
         // 持有 REPORT_SECRET 的機器都能把這些欄位改成任意字串。以前直接塞進
@@ -68,6 +87,16 @@
             if (!kb || kb <= 0) return '0 B/s';
             if (kb < 1024) return `${kb.toFixed(0)} KB/s`;
             return `${(kb / 1024).toFixed(1)} MB/s`;
+        }
+
+        // 累計流量存在資料庫裡一律是 GB（浮點數），但小水管機器一個月可能
+        // 才幾百 MB，大水管機器一個月上看幾十 TB，固定顯示 GB 兩種極端都不
+        // 好讀，所以依數值大小動態選 MB/GB/TB。
+        function formatTraffic(gb) {
+            gb = gb || 0;
+            if (gb < 1) return `${(gb * 1024).toFixed(0)} MB`;
+            if (gb >= 1024) return `${(gb / 1024).toFixed(2)} TB`;
+            return `${gb.toFixed(2)} GB`;
         }
 
         function formatUptime(seconds) {
@@ -119,18 +148,20 @@
                 const diskTotal = (s.disk_total || 0).toFixed(1);
                 const diskPct = s.disk_total ? ((s.disk_used / s.disk_total) * 100).toFixed(1) : 0;
 
-                const cumTotalGB = ((s.cum_in || 0) + (s.cum_out || 0));
+                const countMode = s.traffic_count_mode || 'total';
+                const cumTotalGB = countMode === 'outbound' ? (s.cum_out || 0)
+                    : countMode === 'inbound' ? (s.cum_in || 0)
+                    : ((s.cum_in || 0) + (s.cum_out || 0));
+                const countModeLabel = countMode === 'outbound' ? '只計出站' : countMode === 'inbound' ? '只計入站' : '上下行合計';
                 const trafficLimitGB = s.traffic_limit || 0;
                 const trafficPct = trafficLimitGB > 0 ? Math.min(100, ((cumTotalGB / trafficLimitGB) * 100)).toFixed(1) : 0;
-                const trafficDisplay = trafficLimitGB > 0 
-                    ? `${cumTotalGB.toFixed(2)} GB / ${trafficLimitGB} GB`
-                    : `${cumTotalGB.toFixed(2)} GB / 不限`;
+                const trafficLimitDisplay = trafficLimitGB > 0 ? `限額 ${formatTraffic(trafficLimitGB)}` : '不限';
 
                 const upSpeed = formatSpeed(s.net_tx);
                 const downSpeed = formatSpeed(s.net_rx);
 
                 return `
-                <div class="glass-card rounded-2xl p-5 shadow-sm border border-emerald-100 relative overflow-hidden ${cardClass}">
+                <div class="glass-card rounded-2xl p-5 shadow-sm border border-emerald-100 relative overflow-hidden cursor-pointer hover:shadow-md hover:border-emerald-200 transition ${cardClass}" data-server-id="${esc(s.id)}">
                     <div class="flex items-center justify-between pb-3 border-b border-gray-100 mb-4">
                         <div class="flex items-center space-x-2">
                             <span class="w-3 h-3 rounded-full ${dotClass} inline-block"></span>
@@ -175,24 +206,22 @@
                         <div>
                             <div class="flex justify-between mb-1">
                                 <span class="text-gray-500 font-medium">流量</span>
-                                <span class="font-semibold text-gray-700">${trafficPct}% <span class="text-gray-400 text-[10px]">(${trafficDisplay})</span></span>
+                                <span class="font-semibold text-gray-700">${trafficPct}%</span>
                             </div>
                             <div class="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
                                 <div class="bg-amber-500 h-1.5 progress-bar-fill" style="width: ${Math.min(100, trafficPct)}%"></div>
                             </div>
-                            ${s.traffic_reset_day ? `<div class="text-[10px] text-gray-400 mt-0.5">每月 ${s.traffic_reset_day} 號自動歸零</div>` : ''}
+                            <div class="flex justify-between text-[10px] text-gray-400 mt-0.5">
+                                <span><span class="text-cyan-600">↓入</span> ${formatTraffic(s.cum_in || 0)} <span class="text-amber-600 ml-1">↑出</span> ${formatTraffic(s.cum_out || 0)}</span>
+                                <span>${trafficLimitDisplay}</span>
+                            </div>
+                            ${s.traffic_reset_day ? `<div class="text-[10px] text-gray-400 mt-0.5">每月 ${s.traffic_reset_day} 號自動歸零 · ${countModeLabel}</div>` : `<div class="text-[10px] text-gray-400 mt-0.5">${countModeLabel}</div>`}
                         </div>
                     </div>
 
                     <div class="mt-4 pt-3 border-t border-gray-100 grid grid-cols-2 gap-2 text-xs text-gray-600">
                         <div><span class="text-emerald-600">↑</span> ${upSpeed} <span class="text-blue-600 ml-1">↓</span> ${downSpeed}</div>
                         <div class="text-right text-gray-500">⏱️ 在線: ${formatUptime(s.uptime)}</div>
-                    </div>
-
-                    <div class="mt-3 flex items-center justify-between text-[11px] gap-1">
-                        <span class="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded font-mono flex-1 text-center">電信: ${s.latency_telecom ? s.latency_telecom + 'ms' : '-ms'}</span>
-                        <span class="bg-blue-50 text-blue-700 px-2 py-0.5 rounded font-mono flex-1 text-center">聯通: ${s.latency_unicom ? s.latency_unicom + 'ms' : '-ms'}</span>
-                        <span class="bg-orange-50 text-orange-700 px-2 py-0.5 rounded font-mono flex-1 text-center">移動: ${s.latency_mobile ? s.latency_mobile + 'ms' : '-ms'}</span>
                     </div>
 
                     <div class="mt-2 text-[10px] text-gray-400 text-right">
@@ -213,6 +242,211 @@
             } catch (err) {
                 console.error("拉取狀態失敗:", err);
             }
+        }
+
+        // ---- 點卡片看歷史趨勢 ----
+        // 卡片每 3 秒整批重繪，所以事件掛在不會被重繪的外層 grid 上（事件委派），
+        // id 走 data- 屬性而不是內插進 onclick 字串，跟 admin.html 同一套作法。
+        document.getElementById('server-grid').addEventListener('click', (e) => {
+            const card = e.target.closest('[data-server-id]');
+            if (card) openDetail(card.dataset.serverId);
+        });
+
+        let detailId = null;
+        let detailRange = '24h';
+
+        function openDetail(id) {
+            detailId = id;
+            detailRange = '24h';
+            document.getElementById('detail-title').textContent = id;
+            document.getElementById('detail-modal').classList.remove('hidden');
+            document.getElementById('detail-modal').classList.add('flex');
+            updateRangeButtons();
+            loadHistory();
+        }
+
+        function closeDetail() {
+            detailId = null;
+            document.getElementById('detail-modal').classList.add('hidden');
+            document.getElementById('detail-modal').classList.remove('flex');
+        }
+
+        function setRange(r) {
+            detailRange = r;
+            updateRangeButtons();
+            loadHistory();
+        }
+
+        function updateRangeButtons() {
+            const active = 'bg-white shadow text-emerald-600';
+            const inactive = 'text-gray-500';
+            document.getElementById('range-24h').className = 'px-2.5 py-1 rounded-md font-medium ' + (detailRange === '24h' ? active : inactive);
+            document.getElementById('range-7d').className = 'px-2.5 py-1 rounded-md font-medium ' + (detailRange === '7d' ? active : inactive);
+        }
+
+        async function loadHistory() {
+            const container = document.getElementById('detail-charts');
+            const myId = detailId, myRange = detailRange;
+            container.innerHTML = '<div class="text-center text-gray-400 py-10"><i class="fa-solid fa-circle-notch fa-spin mr-1"></i>載入中...</div>';
+            try {
+                const res = await fetch(`/api/servers/${encodeURIComponent(myId)}/history?range=${encodeURIComponent(myRange)}`);
+                // 使用者手快連點兩下不同機器/區間，回來時如果已經不是當前選的，就丟掉這次結果。
+                if (myId !== detailId || myRange !== detailRange) return;
+                if (!res.ok) throw new Error('http ' + res.status);
+                const points = await res.json();
+                renderCharts(Array.isArray(points) ? points : []);
+            } catch (e) {
+                if (myId !== detailId || myRange !== detailRange) return;
+                container.innerHTML = '<div class="text-center text-gray-400 py-10">載入歷史資料失敗，稍後再試</div>';
+            }
+        }
+
+        function renderCharts(points) {
+            const container = document.getElementById('detail-charts');
+            if (!points || points.length < 2) {
+                container.innerHTML = '<div class="text-center text-gray-400 py-10">這台機器累積的歷史資料還不夠，晚點再回來看</div>';
+                return;
+            }
+            const labels = points.map(p => new Date(p.ts));
+            // 判斷「這兩個點之間算不算斷線」的門檻：24 小時視圖是每分鐘一筆原始
+            // 快照，正常間隔在 1-2 分鐘內；7 天視圖是後端聚合過的小時級資料，
+            // 正常間隔剛好 1 小時。都抓「正常間隔的 2.5 倍」當門檻，容忍一點
+            // 抖動，又能抓到機器離線造成的資料缺口（機器離線時，後端已經不會
+            // 再幫它寫快照，缺口在資料裡就是真的沒有那幾筆）。
+            const maxGapMs = detailRange === '7d' ? 2.5 * 3600 * 1000 : 2.5 * 60 * 1000;
+            container.innerHTML = '';
+            container.appendChild(buildChartCard('CPU / 記憶體', labels, [
+                { label: 'CPU', color: '#10b981', values: points.map(p => p.cpu || 0) },
+                { label: '記憶體', color: '#3b82f6', values: points.map(p => p.mem_total ? (p.mem_used / p.mem_total * 100) : 0) },
+            ], v => v.toFixed(0) + '%', maxGapMs));
+            container.appendChild(buildChartCard('硬碟使用率', labels, [
+                { label: '硬碟', color: '#a855f7', values: points.map(p => p.disk_total ? (p.disk_used / p.disk_total * 100) : 0) },
+            ], v => v.toFixed(0) + '%', maxGapMs));
+            container.appendChild(buildChartCard('即時網速', labels, [
+                { label: '上傳', color: '#10b981', values: points.map(p => p.net_tx || 0) },
+                { label: '下載', color: '#3b82f6', values: points.map(p => p.net_rx || 0) },
+            ], v => formatSpeed(v), maxGapMs));
+            container.appendChild(buildChartCard('累計流量', labels, [
+                { label: '出站', color: '#f59e0b', values: points.map(p => p.cum_out || 0) },
+                { label: '入站', color: '#06b6d4', values: points.map(p => p.cum_in || 0) },
+            ], formatTraffic, maxGapMs));
+        }
+
+        // 純手刻、不依賴任何圖表庫的簡易折線圖：viewBox 用固定座標系、
+        // preserveAspectRatio="none" 讓 SVG 隨容器寬度自動撐開，
+        // 不用另外處理 resize。7 天視圖傳進來的點已經是後端聚合過的小時級資料，
+        // 24 小時視圖大約 1440 點，兩種情況畫線都不吃力。
+        function buildChartCard(title, labels, series, fmt, maxGapMs) {
+            const wrap = document.createElement('div');
+            wrap.className = 'border border-gray-100 rounded-xl p-3';
+
+            const allVals = series.flatMap(s => s.values).filter(v => Number.isFinite(v));
+            const min = allVals.length ? Math.min(0, ...allVals) : 0;
+            const max = allVals.length ? Math.max(1, ...allVals) : 1;
+            const range = (max - min) || 1;
+
+            const W = 600, H = 120, PAD = 4;
+            const n = labels.length;
+            const xAt = i => n <= 1 ? PAD : PAD + (i / (n - 1)) * (W - PAD * 2);
+            const yAt = v => H - PAD - ((v - min) / range) * (H - PAD * 2);
+
+            const paths = series.map((s, si) => {
+                // 跟前一個點的時間差超過門檻，就用 M（另起一筆）取代 L（連線），
+                // 這段中間就會留白，而不是硬畫一條看起來像「一直正常運作」的線。
+                let d = '';
+                for (let i = 0; i < s.values.length; i++) {
+                    const brokenBefore = i > 0 && (labels[i] - labels[i - 1]) > maxGapMs;
+                    d += `${i === 0 || brokenBefore ? 'M' : 'L'} ${xAt(i).toFixed(1)} ${yAt(s.values[i]).toFixed(1)} `;
+                }
+                return `<path class="series-line" data-si="${si}" d="${d}" fill="none" stroke="${s.color}" stroke-width="1.5" vector-effect="non-scaling-stroke" />`;
+            }).join('');
+
+            const legend = series.map(s => {
+                const last = s.values[s.values.length - 1] || 0;
+                return `<span class="inline-flex items-center gap-1 mr-3"><span class="w-2 h-2 rounded-full inline-block" style="background:${s.color}"></span>${esc(s.label)} <b class="text-gray-700">${fmt(last)}</b></span>`;
+            }).join('');
+
+            const timeFmt = d => d.toLocaleString('zh-HK', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+
+            const dots = series.map((s, si) =>
+                `<circle class="hover-dot" data-si="${si}" cx="0" cy="0" r="2.5" fill="${s.color}" stroke="white" stroke-width="0.75" style="display:none" vector-effect="non-scaling-stroke" />`
+            ).join('');
+
+            wrap.innerHTML = `
+                <div class="flex items-center justify-between mb-1 flex-wrap gap-y-1">
+                    <span class="text-xs font-semibold text-gray-600">${esc(title)}</span>
+                    <span class="text-[11px] text-gray-500">${legend}</span>
+                </div>
+                <div class="relative">
+                    <svg viewBox="0 0 ${W} ${H}" class="w-full h-20 chart-svg cursor-crosshair" preserveAspectRatio="none">
+                        <line x1="0" y1="${H - PAD}" x2="${W}" y2="${H - PAD}" stroke="#e5e7eb" stroke-width="1" vector-effect="non-scaling-stroke" />
+                        ${paths}
+                        <line class="hover-line" x1="0" y1="0" x2="0" y2="${H}" stroke="#9ca3af" stroke-width="1" stroke-dasharray="2,2" vector-effect="non-scaling-stroke" style="display:none" />
+                        ${dots}
+                    </svg>
+                    <div class="chart-tooltip hidden absolute z-10 top-1 bg-gray-900/90 text-white text-[10px] leading-relaxed rounded-md px-2 py-1 pointer-events-none whitespace-nowrap"></div>
+                </div>
+                <div class="flex justify-between text-[10px] text-gray-400 mt-1">
+                    <span>${timeFmt(labels[0])}</span>
+                    <span>${timeFmt(labels[labels.length - 1])}</span>
+                </div>
+            `;
+
+            // 滑鼠移到圖上：找最接近的資料點，畫一條垂直虛線＋每條線各自的圓點，
+            // 再彈一個小 tooltip 顯示那個時間點的實際數值（跟 Beszel 那種互動
+            // 圖表同一套邏輯）。純手刻 SVG，所以自己算座標，不依賴圖表庫。
+            const svg = wrap.querySelector('.chart-svg');
+            const hoverLine = wrap.querySelector('.hover-line');
+            const hoverDots = wrap.querySelectorAll('.hover-dot');
+            const tooltip = wrap.querySelector('.chart-tooltip');
+
+            function showAt(clientX) {
+                const rect = svg.getBoundingClientRect();
+                if (rect.width === 0) return;
+                const relX = (clientX - rect.left) / rect.width * W;
+                let i = Math.round((relX - PAD) / (W - PAD * 2) * (n - 1));
+                i = Math.max(0, Math.min(n - 1, i));
+
+                const x = xAt(i);
+                hoverLine.setAttribute('x1', x);
+                hoverLine.setAttribute('x2', x);
+                hoverLine.style.display = '';
+
+                series.forEach((s, si) => {
+                    hoverDots[si].setAttribute('cx', x);
+                    hoverDots[si].setAttribute('cy', yAt(s.values[i]));
+                    hoverDots[si].style.display = '';
+                });
+
+                const timeStr = timeFmt(labels[i]);
+                const rows = series.map(s =>
+                    `<span style="color:${s.color}">●</span> ${esc(s.label)} ${fmt(s.values[i])}`
+                ).join('<br>');
+                tooltip.innerHTML = `<div class="font-semibold mb-0.5">${timeStr}</div>${rows}`;
+                tooltip.classList.remove('hidden');
+
+                // tooltip 用容器（外層 relative 的那層 div）座標定位，跟著滑鼠 x；
+                // 靠右邊界時往左翻，避免溢出卡片外面。
+                const containerRect = svg.parentElement.getBoundingClientRect();
+                const tipWidth = tooltip.offsetWidth || 110;
+                let left = clientX - containerRect.left + 10;
+                if (left + tipWidth > containerRect.width) left = clientX - containerRect.left - tipWidth - 10;
+                tooltip.style.left = Math.max(0, left) + 'px';
+            }
+            function hide() {
+                hoverLine.style.display = 'none';
+                hoverDots.forEach(d => d.style.display = 'none');
+                tooltip.classList.add('hidden');
+            }
+            svg.addEventListener('mousemove', e => showAt(e.clientX));
+            svg.addEventListener('mouseleave', hide);
+            // 手機沒有 hover，用 touchmove 做一樣的效果，方便觸控裝置也能看數值。
+            svg.addEventListener('touchmove', e => {
+                if (e.touches[0]) { showAt(e.touches[0].clientX); e.preventDefault(); }
+            }, { passive: false });
+            svg.addEventListener('touchend', hide);
+
+            return wrap;
         }
 
         fetchStatus();

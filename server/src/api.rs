@@ -22,6 +22,34 @@ pub struct AppState {
     /// 這台預設是 Tailscale/內網 plain HTTP 存取，設 true 會導致 Cookie
     /// 整個送不出去、永遠登不進去，所以預設 false，架了 HTTPS 反代才開。
     pub cookie_secure: bool,
+    /// CI 建置時用 --build-arg 塞進來的 git sha（例如 "sha-7bb1105"）,
+    /// 本機沒特別帶這個參數建置時是 "dev"。透過 /api/version 讓 admin.html
+    /// 知道「現在這個伺服器是哪個版本」，藉此把新機器的 compose 片段釘在
+    /// 同一個版本的 Agent 映像上，而不是永遠對著會一直變的 :latest。
+    pub app_version: String,
+}
+
+#[derive(Serialize)]
+pub struct VersionInfo {
+    version: String,
+}
+
+pub async fn version_info(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    Json(VersionInfo {
+        version: state.app_version.clone(),
+    })
+}
+
+/// 給 Docker HEALTHCHECK 打的輕量端點：連 DB 都探一下（`SELECT 1`），
+/// 不只是確認 axum 這條 process 還活著，順便確認 SQLite 連線池沒卡死。
+pub async fn healthz(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match sqlx::query("SELECT 1").execute(&state.pool).await {
+        Ok(_) => (StatusCode::OK, "ok").into_response(),
+        Err(e) => {
+            tracing::error!("healthz db check failed: {:?}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "db error").into_response()
+        }
+    }
 }
 
 pub async fn report(
@@ -66,20 +94,7 @@ pub async fn report(
             let pool = state.pool.clone();
             tokio::spawn(async move {
                 if let Ok(settings) = notify::load_settings(&pool).await {
-                    notify::check_report_alerts(
-                        &pool,
-                        &settings,
-                        &result.id,
-                        &result.name,
-                        result.cpu,
-                        result.mem_used,
-                        result.mem_total,
-                        result.cum_in,
-                        result.cum_out,
-                        result.traffic_limit,
-                        result.traffic_notify_percent,
-                    )
-                    .await;
+                    notify::check_report_alerts(&settings, &result).await;
                 }
             });
             (StatusCode::OK, "ok").into_response()
@@ -90,12 +105,6 @@ pub async fn report(
         }
     }
 }
-
-/// 機器超過這麼久沒上報就視為離線（前端綠燈/灰燈用）。
-/// 這跟通知設定裡「離線幾分鐘才告警」（offline_minutes）是兩件事：
-/// 這裡只影響畫面顯示，用一個較短、跟 Agent 預設回報間隔（20 秒）匹配的
-/// 固定值，讓卡片能較快反映真實狀態；告警的靜默期則由使用者在後台設定。
-const ONLINE_STALE_SECS: i64 = 90;
 
 #[derive(Serialize)]
 struct ServerView {
@@ -111,7 +120,7 @@ pub async fn list_servers(State(state): State<Arc<AppState>>) -> impl IntoRespon
             let views: Vec<ServerView> = servers
                 .into_iter()
                 .map(|s| {
-                    let online = (now - s.last_seen).num_seconds() < ONLINE_STALE_SECS;
+                    let online = (now - s.last_seen).num_seconds() < crate::db::ONLINE_STALE_SECS;
                     ServerView { inner: s, online }
                 })
                 .collect();
@@ -119,6 +128,32 @@ pub async fn list_servers(State(state): State<Arc<AppState>>) -> impl IntoRespon
         }
         Err(e) => {
             tracing::error!("list error: {:?}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "db error").into_response()
+        }
+    }
+}
+
+/// 給前端「點卡片看歷史趨勢」用，公開端點（跟 /api/servers 一樣不用登入）——
+/// 反正都是首頁卡片上本來就看得到的同一批數字，只是多了時間軸。
+#[derive(serde::Deserialize)]
+pub struct HistoryQuery {
+    #[serde(default)]
+    pub range: Option<String>,
+}
+
+pub async fn get_server_history(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    axum::extract::Query(q): axum::extract::Query<HistoryQuery>,
+) -> impl IntoResponse {
+    if !valid_id(&id) {
+        return (StatusCode::BAD_REQUEST, "invalid id").into_response();
+    }
+    let range = q.range.as_deref().unwrap_or("24h");
+    match crate::db::get_history(&state.pool, &id, range).await {
+        Ok(points) => Json(points).into_response(),
+        Err(e) => {
+            tracing::error!("get_history error: {:?}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "db error").into_response()
         }
     }
@@ -160,6 +195,7 @@ pub async fn admin_update_traffic_limit(
         payload.traffic_limit,
         payload.traffic_notify_percent,
         payload.traffic_reset_day,
+        &payload.traffic_count_mode,
     )
     .await
     {

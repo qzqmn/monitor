@@ -5,10 +5,7 @@
 | 角色 | 建議部署方式 | 說明 |
 |------|--------------|------|
 | **中央端（Server）** | Docker Compose | 一台穩定有公網 IP 的 VPS |
-| **Agent** | 靜態 binary + systemd（推薦） | 每台被監控機器；也可選 Docker |
-
-Agent **不建議**強制用 Docker：多一層開銷，且 NAS / pmOS 不一定方便跑容器。  
-預設用「編譯好的 binary + systemd」最乾淨；需要時再給 Docker 範例。
+| **Agent** | Docker Compose | 每台被監控機器；統一用 Docker，不再提供 systemd/binary 部署 |
 
 ---
 
@@ -82,7 +79,13 @@ docker compose down       # 停止
 docker compose pull && docker compose up -d   # 更新到最新映像
 ```
 
-資料保存在 `./data/monitor.db`。
+資料保存在 `./data/monitor.db`，裡面含管理員密碼雜湊、每台機器的專屬密鑰與歷史流量，建議定期備份這個檔案（例如 cron 排程 `cp` 到別處，或連同整台機器做快照）。
+
+> CI 現在除了 `:latest`，每次建置也會多打一個 `:sha-<git commit 前7碼>` 的版本 tag。想固定用某個已驗證版本、或新版本有問題要回滾，把 `docker-compose.yml` 裡的 `image:` 從 `:latest` 改成該版本的 tag 再 `docker compose up -d` 即可。
+>
+> **怎麼知道哪個 sha tag 比較新**：sha 本身只是 commit 的雜湊值，不像 `v1`/`v2` 那樣天生就看得出先後順序，但有兩個辦法對照：(1) GHCR 的 packages 頁面，每個 tag 旁邊都有「幾天前推送」的時間戳，當下 `:latest` 指到哪個 sha，那個 sha 旁邊也會多一個「Latest」標籤；(2) 這個 sha 本來就是一個真實的 git commit，`git log --oneline` 或 GitHub 上的 commit 紀錄可以直接查到它在哪個時間點、改了什麼。
+>
+> **`:latest` 還能不能用**：能，行為沒變，`docker-compose.yml` 預設也還是用它。中央端升級後，admin.html「新增機器」產生的 Agent compose 片段，映像 tag 已經改成自動抓目前中央端的 `sha-xxxxxxx`、不是永遠釘死 `:latest`，確保新裝的 Agent 跟中央端是同一次建置、不會有相容性落差；已經在跑的 Agent 不會自動跟著換版本，想一起升級就自己到那台機器 `docker compose pull && docker compose up -d`。
 
 ---
 
@@ -90,97 +93,42 @@ docker compose pull && docker compose up -d   # 更新到最新映像
 
 ### 0. 先在後台「新增機器」登記（每台都要做這一步）
 
-打開 `http://中央端IP:8080/admin.html` 登入後，最上面「➕ 新增機器」填一個 id（例如 `oracle-tokyo`）和顯示名稱，按「產生憑證」。畫面會秀出一段完整的設定內容，包含這台專屬的 `REPORT_SECRET`——**每台機器都要各自新增、各自拿一組不一樣的密鑰**，不是像舊版那樣全部機器共用一組。這組密鑰之後還能在機器管理列表裡點「顯示/複製」再看一次，忘記存也沒關係；真的洩漏了就點「重新產生」，只有那一台需要重新設定。
+打開 `http://中央端IP:8080/admin.html` 登入後，最上面「➕ 新增機器」填一個 id（例如 `oracle-tokyo`）和顯示名稱，按「產生憑證」。畫面會直接秀出一份**填好值、可以直接存檔用的 `docker-compose.yml`**（不用再另外準備 `.env`），裡面已經包含這台專屬的 `MONITOR_URL`/`AGENT_ID`/`REPORT_SECRET`——**每台機器都要各自新增、各自拿一組不一樣的密鑰**，不是像舊版那樣全部機器共用一組。這組密鑰之後還能在機器管理列表裡點「顯示/複製」再看一次，忘記存也沒關係；真的洩漏了就點「重新產生」，只有那一台需要重新設定。
 
 沒有先在這裡新增就直接啟動 Agent，中央端會直接拒絕上報（回應 403 unknown agent id）。
 
-### 方式 A：靜態 Binary + systemd（推薦）
+### 1. 部署 Agent（Docker）
 
-#### 1. 在有 Rust 的機器編譯（或你的開發機）
-
-```bash
-# 進入專案
-cd vps-monitor
-
-# 編譯當前架構
-cargo build -p vps-monitor-agent --release
-
-# 交叉編譯 ARM64、glibc（例如 Oracle ARM VPS，跑一般發行版）
-rustup target add aarch64-unknown-linux-gnu
-cargo build -p vps-monitor-agent --release --target aarch64-unknown-linux-gnu
-
-# 交叉編譯 ARM64、musl（postmarketOS / Alpine 系統要用這個，不是 -gnu；
-# 建議用 `cross` 處理 linker，直接 rustup target add 通常編不過）
-cargo install cross --git https://github.com/cross-rs/cross
-cross build -p vps-monitor-agent --release --target aarch64-unknown-linux-musl
-```
-
-產出檔案：
-
-- x86_64：`target/release/vps-monitor-agent`
-- ARM64（glibc）：`target/aarch64-unknown-linux-gnu/release/vps-monitor-agent`
-- ARM64（musl / pmOS）：`target/aarch64-unknown-linux-musl/release/vps-monitor-agent`
-
-#### 2. 複製到被監控機器
+把後台產生的內容存成該台機器上的 `docker-compose.yml`，然後：
 
 ```bash
-scp target/release/vps-monitor-agent root@被監控IP:/usr/local/bin/
-# ARM 則用對應路徑
-ssh root@被監控IP
-chmod +x /usr/local/bin/vps-monitor-agent
-```
-
-#### 3. 安裝 systemd 服務
-
-```bash
-# 編輯範例
-nano /etc/systemd/system/vps-monitor-agent.service
-```
-
-內容參考 `agent/vps-monitor-agent.service`，至少改：
-
-```ini
-Environment=MONITOR_URL=http://中央端IP:8080
-Environment=AGENT_ID=跟後台新增機器時填的 id 完全一致，例如 oracle-tokyo
-Environment=AGENT_NAME=顯示名稱例如 Oracle-日本東京
-Environment=REPORT_SECRET=後台新增機器時顯示的專屬密鑰
-Environment=INTERVAL_SECS=20
-```
-
-然後：
-
-```bash
-systemctl daemon-reload
-systemctl enable --now vps-monitor-agent
-systemctl status vps-monitor-agent
-journalctl -u vps-monitor-agent -f
+docker compose up -d
+docker compose logs -f
 ```
 
 看到 `reported cpu=...` 且中央端網頁出現卡片即成功。
 
-#### 4. 多台機器
+> `network_mode: host` 較容易正確統計網卡流量；若該機器環境不允許 host network（少見），可以改成橋接模式，但流量/連線數等統計可能不準。
+>
+> 如果你 fork 了本專案、image 不是推到 `qzqmn` 這個 GHCR 帳號，記得把 compose 裡 `image:` 那行的帳號改掉，或用 `cp agent/.env.example agent/.env` 那份帶 `GHCR_OWNER` 變數的範本自行組裝。
 
-每一台都要先在後台「新增機器」各自登記，`AGENT_ID` 對應登記時的 id、`REPORT_SECRET` 是那台自己的專屬密鑰——**每台都不一樣**，不能像舊版那樣共用一組，`AGENT_NAME` 隨意。
+### 2. 多台機器
 
----
+每一台都要先在後台「新增機器」各自登記，`AGENT_ID` 對應登記時的 id、`REPORT_SECRET` 是那台自己的專屬密鑰——**每台都不一樣**，不能像舊版那樣共用一組。
 
-### 方式 B：Agent 用 Docker（可選）
+### 3. 機器不方便跑 Docker 怎麼辦
 
-```bash
-cd vps-monitor/agent
-cp .env.example .env   # 填 MONITOR_URL / AGENT_ID（後台登記的 id）/ REPORT_SECRET（後台顯示的專屬密鑰）
-docker compose pull
-docker compose up -d
-```
+本專案目前只維護 Docker 這一種 Agent 部署方式，沒有現成的 systemd unit 或發行版可用。如果某台機器（例如資源很小的單板機、部分手機 postmarketOS 環境）跑 Docker 本身就有困難或不穩定，你可以：
 
-同樣是拉 ghcr 上 CI 建好的多架構映像，不用在被監控機器上裝 Rust 工具鏈。`network_mode: host` 較容易正確統計網卡流量；若不行可改橋接並接受流量統計略有偏差。
+- 從 `agent/` 目錄手動 `cd agent && cargo build --release` 編出對應架構的二進位檔，自己寫開機腳本執行（環境變數同 `agent/.env.example`），只是這條路徑不在本專案的官方文件/CI 驗證範圍內，之後行為變動不會特別遷就它；
+- 或先確認清楚該機器上 Docker 本身能否正常跑（有些精簡系統對容器支援不完整，會在拉取/解壓映像時卡住或當機），排除掉之後再上 Agent。
 
 ---
 
 ## 四、NAS / pmOS 注意
 
-- **NAS**：若支援 Docker 可用方式 B；否則用對應架構的 static binary + 開機腳本或 systemd（若有）。
-- **pmOS Mix 2S**：用 ARM64 binary，手動或用 openrc/systemd 開機啟動；需能出網訪問中央端與 ip-api.com（國旗）。
+- **NAS**：多數支援 Docker，直接照上面「三、Agent 部署」用 Docker 即可。
+- **pmOS / 手機類設備**：部分精簡系統的 Docker 支援不完整或資源吃緊，實際跑之前建議先確認 Docker 本身（`docker run hello-world` 之類）在該機器上能穩定跑，不會卡住或讓系統當機；若不行，參考上一節「機器不方便跑 Docker 怎麼辦」自行編譯二進位檔執行。
 
 ---
 

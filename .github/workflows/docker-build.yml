@@ -10,7 +10,38 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: [server, agent]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry & build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.image }}
+
+      # server/、agent/ 現在各自是獨立的 crate（沒有根目錄 workspace 了），
+      # 這裡在各自子目錄裡跑、用該目錄自己的 Cargo.lock，跟下面 build job
+      # 進 Docker 建置時用的鎖檔版本完全一致。
+      - name: cargo test
+        working-directory: ${{ matrix.image }}
+        run: cargo test --locked --all-features
+
+      - name: cargo clippy (deny warnings)
+        working-directory: ${{ matrix.image }}
+        run: cargo clippy --all-targets --locked -- -D warnings
+
   build:
+    needs: test
     runs-on: ${{ matrix.target.runner }}
     strategy:
       fail-fast: false
@@ -39,11 +70,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set image name and platform slug
+      - name: Set image name, platform slug and version tag
         run: |
           echo "IMAGE=${REGISTRY}/${GITHUB_REPOSITORY_OWNER,,}/vps-monitor-${{ matrix.image }}" >> $GITHUB_ENV
           platform="${{ matrix.target.platform }}"
           echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
+          echo "SHA_TAG=sha-${GITHUB_SHA::7}" >> $GITHUB_ENV
 
       - name: Build and push by digest
         id: build
@@ -52,6 +84,14 @@ jobs:
           context: ./${{ matrix.image }}
           file: ./${{ matrix.image }}/Dockerfile
           platforms: ${{ matrix.target.platform }}
+          build-args: |
+            APP_VERSION=${{ env.SHA_TAG }}
+          # Dockerfile 用 --mount=type=cache 快取 cargo registry 跟 target/，
+          # 這裡再把那份 BuildKit cache 存進 GitHub Actions 的 cache 服務，
+          # 兩者要搭配才有效——只做其中一邊，依賴還是會整包重編。scope 依
+          # image+平台分開，amd64/arm64 編譯產物不能互用，混在一起快取沒意義。
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ env.PLATFORM_PAIR }}
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
@@ -85,8 +125,10 @@ jobs:
           pattern: digests-${{ matrix.image }}-*
           merge-multiple: true
 
-      - name: Set image name
-        run: echo "IMAGE=${REGISTRY}/${GITHUB_REPOSITORY_OWNER,,}/vps-monitor-${{ matrix.image }}" >> $GITHUB_ENV
+      - name: Set image name and version tag
+        run: |
+          echo "IMAGE=${REGISTRY}/${GITHUB_REPOSITORY_OWNER,,}/vps-monitor-${{ matrix.image }}" >> $GITHUB_ENV
+          echo "SHA_TAG=sha-${GITHUB_SHA::7}" >> $GITHUB_ENV
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -103,7 +145,9 @@ jobs:
         run: |
           docker buildx imagetools create \
             -t ${{ env.IMAGE }}:latest \
+            -t ${{ env.IMAGE }}:${{ env.SHA_TAG }} \
             $(printf '${{ env.IMAGE }}@sha256:%s ' *)
 
       - name: Inspect image
         run: docker buildx imagetools inspect ${{ env.IMAGE }}:latest
+

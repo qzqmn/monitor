@@ -22,15 +22,6 @@ struct Report {
     traffic_in: f64,
     traffic_out: f64,
     uptime: i64,
-    latency: Option<Latency>,
-    loss: Option<f32>,
-}
-
-#[derive(Serialize)]
-struct Latency {
-    telecom: Option<i32>,
-    unicom: Option<i32>,
-    mobile: Option<i32>,
 }
 
 struct Config {
@@ -227,10 +218,13 @@ fn collect_metrics(
         traffic_in,
         traffic_out,
         uptime,
-        latency: None,
-        loss: None,
     }
 }
+
+// Docker HEALTHCHECK 用：agent 本身不聽任何 port，沒有 HTTP 端點可以打，
+// 所以改成每次上報成功就摸一下這個檔案的時間戳，Dockerfile 裡的
+// HEALTHCHECK 檢查這個檔案最近有沒有被更新過來判斷是否健康。
+const HEALTH_FILE: &str = "/tmp/agent-healthy";
 
 async fn send_report(client: &reqwest::Client, url: &str, report: &Report) -> Result<()> {
     let resp = client
@@ -280,14 +274,15 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    let version = std::env::var("APP_VERSION").unwrap_or_else(|_| "dev".to_string());
     let cfg = load_config()?;
     let report_url = format!(
         "{}/api/report",
         cfg.server_url.trim_end_matches('/')
     );
     info!(
-        "agent starting id={} name={} url={} interval={}s",
-        cfg.agent_id, cfg.agent_name, report_url, cfg.interval_secs
+        "agent starting version={} id={} name={} url={} interval={}s",
+        version, cfg.agent_id, cfg.agent_name, report_url, cfg.interval_secs
     );
 
     let (country, city) = fetch_geo().await;
@@ -308,10 +303,15 @@ async fn main() -> Result<()> {
     loop {
         let report = collect_metrics(&mut sys, &mut prev_rx, &mut prev_tx, &country, &city, &cfg);
         match send_report(&client, &report_url, &report).await {
-            Ok(_) => info!(
-                "reported cpu={:.1}% mem={:.1}/{:.1}GB",
-                report.cpu, report.mem_used, report.mem_total
-            ),
+            Ok(_) => {
+                info!(
+                    "reported cpu={:.1}% mem={:.1}/{:.1}GB",
+                    report.cpu, report.mem_used, report.mem_total
+                );
+                if let Err(e) = std::fs::write(HEALTH_FILE, "") {
+                    error!("failed to touch health file: {:?}", e);
+                }
+            }
             Err(e) => error!("report failed: {:?}", e),
         }
 

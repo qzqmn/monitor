@@ -59,7 +59,7 @@
     <!-- 2. 管理面板 (登入後顯示) -->
     <div id="admin-dashboard" class="hidden max-w-4xl mx-auto px-4 pt-6">
         <div class="flex justify-between items-center mb-6">
-            <h1 class="text-2xl font-bold text-gray-900">⚙️ 監控系統管理後台</h1>
+            <h1 class="text-2xl font-bold text-gray-900">⚙️ 監控系統管理後台 <span id="server-version" class="text-xs font-normal text-gray-400 align-middle"></span></h1>
             <div class="flex gap-2">
                 <button onclick="showChangePassword()" class="text-sm bg-gray-100 text-gray-600 px-3 py-1.5 rounded-lg hover:bg-gray-200 transition">修改密碼</button>
                 <button onclick="handleLogout()" class="text-sm bg-red-50 text-red-600 px-3 py-1.5 rounded-lg hover:bg-red-100 transition">登出</button>
@@ -77,7 +77,7 @@
                 <button type="submit" class="bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-emerald-700 transition">產生憑證</button>
             </form>
             <div id="new-agent-result" class="hidden mt-4 bg-gray-50 border border-gray-200 rounded-xl p-4 text-xs">
-                <p class="font-semibold text-gray-700 mb-2">把下面這段貼到該台機器的 Agent <code>.env</code>（或 docker-compose 環境變數）裡：</p>
+                <p class="font-semibold text-gray-700 mb-2">把下面這段存成 <code>docker-compose.yml</code>，貼到該台機器上，<code>docker compose up -d</code> 就能跑（不用另外準備 .env）：</p>
                 <pre id="new-agent-snippet" class="bg-gray-900 text-emerald-300 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap break-all"></pre>
                 <button type="button" onclick="copySnippet()" class="mt-2 bg-gray-700 text-white px-3 py-1 rounded text-xs hover:bg-gray-800">複製</button>
                 <p class="text-amber-600 mt-2">⚠️ 這組密鑰只會顯示這一次的完整內容；下面列表裡的 token 一樣看得到，別擔心弄丟。</p>
@@ -199,12 +199,27 @@
             if (!loggedIn) showView('login-view');
         };
 
+        // 伺服器目前跑的版本（CI 建置時燒進映像的 git sha，本機建置是 "dev"）。
+        // 用來讓「新增機器」產生的 compose 片段釘住同一個版本的 Agent 映像，
+        // 不是每次都指向會一直變的 :latest；也順便顯示在畫面上，回答
+        // 「現在跑的到底是哪一版」這個問題。
+        let serverVersion = 'dev';
+        async function loadServerVersion() {
+            try {
+                const res = await fetch('/api/version');
+                if (res.ok) serverVersion = (await res.json()).version || 'dev';
+            } catch (e) { /* 拿不到就維持預設 dev，退回用 :latest */ }
+            const el = document.getElementById('server-version');
+            if (el) el.textContent = serverVersion === 'dev' ? '本機建置版本' : serverVersion;
+        }
+
         async function tryLoadDashboard() {
             const res = await fetch('/api/admin/agents');
             if (!res.ok) return false;
             showView('admin-dashboard');
             renderAgentList(await res.json());
             loadNotifyConfig();
+            loadServerVersion();
             return true;
         }
 
@@ -285,11 +300,34 @@
             if (res.ok) {
                 const data = await res.json();
                 const monitorUrl = window.location.origin;
+                // 顯示名稱是自由文字：直接內插進 YAML 的話，含冒號、#、引號的名稱會讓
+                // compose 檔壞掉；`$` 還會被 compose 當成變數插值。用 JSON.stringify
+                // 產生的雙引號字串本身就是合法 YAML，`$` 則先跳脫成 `$$`。
+                const yamlItem = (k, v) => JSON.stringify(`${k}=${String(v).replace(/\$/g, '$$$$')}`);
+                // agent 映像的 tag 跟目前伺服器同一個版本（同一次 CI 建置出來的
+                // server/agent 一定能互通；混用不同版本理論上也大多可以，因為
+                // 上報欄位都用 #[serde(default)] 盡量兼容，但沒有正式的相容性
+                // 保證，同版本最保險）。伺服器是本機建置（沒有 sha 版本號）時
+                // 退回用 :latest。
+                const agentTag = (serverVersion && serverVersion !== 'dev') ? serverVersion : 'latest';
+                // 直接把值寫死進 compose，不用 .env：新機器不需要額外檔案，
+                // 複製這一段存成 docker-compose.yml 就能跑。若你 fork 了本專案、
+                // image 不是推到 qzqmn 這個帳號，記得把 image: 那行改掉。
                 lastSnippet =
-`MONITOR_URL=${monitorUrl}
-AGENT_ID=${data.id}
-AGENT_NAME=${data.name}
-REPORT_SECRET=${data.token}`;
+`services:
+  agent:
+    image: ghcr.io/qzqmn/vps-monitor-agent:${agentTag}
+    container_name: vps-monitor-agent-${data.id}
+    restart: unless-stopped
+    init: true
+    network_mode: host
+    environment:
+      - ${yamlItem('MONITOR_URL', monitorUrl)}
+      - ${yamlItem('AGENT_ID', data.id)}
+      - ${yamlItem('AGENT_NAME', data.name)}
+      - ${yamlItem('REPORT_SECRET', data.token)}
+      - INTERVAL_SECS=20
+      - RUST_LOG=info`;
                 document.getElementById('new-agent-snippet').textContent = lastSnippet;
                 document.getElementById('new-agent-result').classList.remove('hidden');
                 document.getElementById('newAgentId').value = '';
@@ -356,6 +394,11 @@ REPORT_SECRET=${data.token}`;
 
                         <div class="flex items-center gap-2 flex-wrap text-sm">
                             <input type="number" class="limit-input border px-2 py-1 rounded w-24" data-id="${idAttr}" value="${esc(s.traffic_limit || 0)}" placeholder="限額(GB)" title="流量限額(GB)，0=不限">
+                            <select class="countmode-input border px-2 py-1 rounded text-sm" data-id="${idAttr}" title="計費只算哪個方向，多數 VPS 商只算出站(上傳)">
+                                <option value="total" ${s.traffic_count_mode === 'total' || !s.traffic_count_mode ? 'selected' : ''}>上下行合計</option>
+                                <option value="outbound" ${s.traffic_count_mode === 'outbound' ? 'selected' : ''}>只算出站(上傳)</option>
+                                <option value="inbound" ${s.traffic_count_mode === 'inbound' ? 'selected' : ''}>只算入站(下載)</option>
+                            </select>
                             <input type="number" class="percent-input border px-2 py-1 rounded w-16" data-id="${idAttr}" value="${esc(s.traffic_notify_percent ?? 80)}" min="1" max="100" title="達百分之多少告警">
                             <span class="text-gray-400">% ·</span>
                             <input type="number" class="resetday-input border px-2 py-1 rounded w-16" data-id="${idAttr}" value="${esc(s.traffic_reset_day || 0)}" min="0" max="31" title="每月幾號自動歸零，0=不自動">
@@ -419,8 +462,9 @@ REPORT_SECRET=${data.token}`;
             const percent = Number.isNaN(percentRaw) ? 80 : percentRaw;
             const resetDayRaw = parseInt(sel('resetday-input').value, 10);
             const resetDay = Number.isNaN(resetDayRaw) ? 0 : resetDayRaw;
+            const countMode = sel('countmode-input').value;
             await apiPost('/api/admin/update-traffic-limit', {
-                id, traffic_limit: limit, traffic_notify_percent: percent, traffic_reset_day: resetDay
+                id, traffic_limit: limit, traffic_notify_percent: percent, traffic_reset_day: resetDay, traffic_count_mode: countMode
             }, '流量設定更新成功！');
         }
 

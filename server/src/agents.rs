@@ -74,10 +74,9 @@ pub struct AgentListItem {
     pub traffic_limit: f64,
     pub traffic_notify_percent: f64,
     pub traffic_reset_day: i64,
+    pub traffic_count_mode: String,
 }
 
-/// 跟 api::ONLINE_STALE_SECS 用同一個門檻，判斷「上次上報是不是太久之前」。
-const ONLINE_STALE_SECS: i64 = 90;
 
 pub async fn list_agents(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match db::list_agents_admin(&state.pool).await {
@@ -89,11 +88,12 @@ pub async fn list_agents(State(state): State<Arc<AppState>>) -> impl IntoRespons
                     id: r.id,
                     name: r.name,
                     token: r.token.unwrap_or_default(),
-                    online: (now - r.last_seen).num_seconds() < ONLINE_STALE_SECS,
+                    online: (now - r.last_seen).num_seconds() < crate::db::ONLINE_STALE_SECS,
                     last_seen: r.last_seen,
                     traffic_limit: r.traffic_limit,
                     traffic_notify_percent: r.traffic_notify_percent,
                     traffic_reset_day: r.traffic_reset_day,
+                    traffic_count_mode: r.traffic_count_mode,
                 })
                 .collect();
             Json(items).into_response()

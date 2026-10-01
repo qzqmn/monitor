@@ -1,3 +1,4 @@
+use crate::db::UpsertResult;
 use anyhow::{anyhow, Result};
 use once_cell::sync::Lazy;
 use reqwest::Client;
@@ -178,19 +179,12 @@ pub async fn send_alert(settings: &NotifySettings, alert: &AlertPayload) -> Resu
 }
 
 /// 在每次上報後檢查是否需要告警（CPU / 記憶體 / 流量）
-pub async fn check_report_alerts(
-    _pool: &SqlitePool,
-    settings: &NotifySettings,
-    server_id: &str,
-    server_name: &str,
-    cpu: f32,
-    mem_used: f64,
-    mem_total: f64,
-    cum_in: f64,
-    cum_out: f64,
-    traffic_limit: f64,
-    traffic_notify_percent: f64,
-) {
+pub async fn check_report_alerts(settings: &NotifySettings, r: &UpsertResult) {
+    let (server_id, server_name) = (r.id.as_str(), r.name.as_str());
+    let (cpu, mem_used, mem_total) = (r.cpu, r.mem_used, r.mem_total);
+    let (cum_in, cum_out) = (r.cum_in, r.cum_out);
+    let (traffic_limit, traffic_notify_percent) = (r.traffic_limit, r.traffic_notify_percent);
+    let traffic_count_mode = r.traffic_count_mode.as_str();
     let now = chrono::Utc::now().to_rfc3339();
 
     // CPU
@@ -234,9 +228,15 @@ pub async fn check_report_alerts(
         }
     }
 
-    // 流量百分比
+    // 流量百分比：計費方向依 traffic_count_mode 而定——很多 VPS 商只算出站
+    // （outbound，即這台機器的上傳/tx），不是上下行合計，這裡跟著設定走，
+    // 才不會把只算出站的額度誤判成超量。
     if traffic_limit > 0.0 && traffic_notify_percent > 0.0 {
-        let total = cum_in + cum_out;
+        let total = match traffic_count_mode {
+            "outbound" => cum_out,
+            "inbound" => cum_in,
+            _ => cum_in + cum_out,
+        };
         let pct = total / traffic_limit * 100.0;
         if pct >= traffic_notify_percent && cooled_down(server_id, "traffic") {
             let alert = AlertPayload {
